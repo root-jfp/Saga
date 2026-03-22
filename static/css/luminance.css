@@ -1,0 +1,252 @@
+/* ============================================================================
+   Book Reader — Design Tokens & Base Styles
+   Self-contained; no external imports.
+   Aesthetic: minimal, classic library — warm parchment / charcoal, gold accent
+   ============================================================================ */
+
+/* ── Design tokens — dark theme (default) ──────────────────────────────────── */
+:root,
+body,
+body.dark-theme {
+    /* Backgrounds */
+    --br-bg:          #1a1710;
+    --br-bg-raised:   #222018;
+    --br-bg-sunken:   #13110c;
+    --br-surface:     #2a2620;
+
+    /* Text */
+    --br-text:        #e8e2d6;
+    --br-text-sec:    #a09585;
+    --br-text-muted:  #6b6052;
+
+    /* Borders */
+    --br-border:      rgba(232,226,214,0.08);
+    --br-border-em:   rgba(232,226,214,0.18);
+
+    /* Accent — warm gold */
+    --br-accent:         #c9a84c;
+    --br-accent-hover:   #d4b65e;
+    --br-accent-subtle:  rgba(201,168,76,0.15);
+    --br-highlight:      rgba(201,168,76,0.30);
+    --br-accent-rgb:     201,168,76;
+
+    /* Semantic */
+    --br-error:   #c25a4a;
+    --br-success: #7a9a5a;
+    --br-warn:    #c9943a;
+
+    /* Book page surface (reading area) */
+    --br-page-bg:   #1e1c17;
+    --br-page-text: #d4d0c8;
+
+    /* Typography */
+    --br-font-serif: Georgia,"Book Antiqua","Palatino Linotype",Palatino,serif;
+    --br-font-sans:  system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --br-font-mono:  "SF Mono",Monaco,Consolas,"Courier New",monospace;
+
+    /* Spacing scale */
+    --br-s1:  0.25rem;
+    --br-s2:  0.5rem;
+    --br-s3:  0.75rem;
+    --br-s4:  1rem;
+    --br-s5:  1.25rem;
+    --br-s6:  1.5rem;
+    --br-s8:  2rem;
+    --br-s10: 2.5rem;
+    --br-s12: 3rem;
+
+    /* Radius */
+    --br-r-sm: 4px;
+    --br-r:    6px;
+    --br-r-md: 8px;
+    --br-r-lg: 12px;
+    --br-r-xl: 16px;
+
+    /* Motion */
+    --br-ease:   cubic-bezier(0.4,0,0.2,1);
+    --br-t-fast: 120ms;
+    --br-t-base: 200ms;
+    --br-t-slow: 320ms;
+
+    /* Z-index */
+    --br-z-modal:  400;
+    --br-z-toast:  600;
+    --br-z-above:  10;
+
+    /* Layout */
+    --br-header-height: 3.25rem;
+}
+
+/* ── Light theme overrides ──────────────────────────────────────────────────── */
+body.light-theme {
+    --br-bg:          #f0ebe0;
+    --br-bg-raised:   #faf6ef;
+    --br-bg-sunken:   #e4ddd0;
+    --br-surface:     #fefcf8;
+
+    --br-text:        #1e1810;
+    --br-text-sec:    #5a4e42;
+    --br-text-muted:  #8a7e72;
+
+    --br-border:      rgba(60,40,20,0.18);
+    --br-border-em:   rgba(60,40,20,0.32);
+
+    --br-accent:        #a07820;
+    --br-accent-hover:  #8a6310;
+    --br-accent-subtle: rgba(160,120,32,0.12);
+    --br-highlight:     rgba(160,120,32,0.22);
+    --br-accent-rgb:    160,120,32;
+
+    --br-error:   #a63d2f;
+    --br-success: #4a7030;
+    --br-warn:    #906010;
+
+    --br-page-bg:   #fffef9;
+    --br-page-text: #1e1e1e;
+}
+
+/* ── Reset & base ───────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: var(--br-font-sans);
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--br-text);
+    background-color: var(--br-bg);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+    color: var(--br-accent);
+    text-decoration: none;
+}
+a:hover { color: var(--br-accent-hover); }
+
+button {
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    background: none;
+}
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+input,
+textarea,
+select {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: transparent;
+    border: none;
+    outline: none;
+}
+
+img { display: block; max-width: 100%; }
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar             { width: 6px; height: 6px; }
+::-webkit-scrollbar-track       { background: transparent; }
+::-webkit-scrollbar-thumb       { background: var(--br-border-em); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--br-text-muted); }
+
+/* ── Focus ring ────────────────────────────────────────────────────────────── */
+:focus-visible {
+    outline: 2px solid var(--br-accent);
+    outline-offset: 2px;
+}
+
+/* ── Utility ───────────────────────────────────────────────────────────────── */
+.hidden { display: none !important; }
+
+/* ── Modal content box ───────────────────────────────────────────────────────── */
+.modal-content {
+    background: var(--br-surface);
+    border: 1px solid var(--br-border-em);
+    border-radius: var(--br-r-lg);
+    width: 100%;
+    max-width: 28rem;
+    max-height: calc(100vh - var(--br-s8));
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--br-s5) var(--br-s6);
+    border-bottom: 1px solid var(--br-border);
+    flex-shrink: 0;
+}
+
+.modal-title {
+    font-family: var(--br-font-serif);
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--br-text);
+    letter-spacing: 0.01em;
+}
+
+.modal-close {
+    width: 2rem;
+    height: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--br-r);
+    color: var(--br-text-muted);
+    font-size: 1.1rem;
+    transition: color var(--br-t-fast), background var(--br-t-fast);
+}
+.modal-close:hover {
+    color: var(--br-text);
+    background: var(--br-border);
+}
+
+.modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--br-s6);
+}
+
+/* ── Toast (styles are in books.css scoped to #toastContainer) ──────────────── */
+
+/* ── Keyframes ──────────────────────────────────────────────────────────────── */
+@keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes slide-up {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-gold {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.5; }
+}

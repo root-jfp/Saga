@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Book Reader</title>
+
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/css/luminance.css">
+    <link rel="stylesheet" href="/static/css/books.css">
+
+</head>
+<body class="dark-theme">
+
+<!-- ── App Header ──────────────────────────────────────────────────────────── -->
+<header class="app-header">
+    <h1>Book Reader</h1>
+    <div class="header-actions">
+        <div class="user-pills" id="userPills"></div>
+        <button class="theme-btn" id="themeToggle" title="Toggle theme">☀</button>
+    </div>
+</header>
+
+<!-- ── Main Content ────────────────────────────────────────────────────────── -->
+<div class="container">
+
+    <!-- View Toggle: Library vs Reader -->
+    <div class="view-toggle" id="viewToggle">
+        <button class="view-btn active" data-view="library">Library</button>
+        <button class="view-btn" data-view="reader">Reader</button>
+    </div>
+
+    <!-- Library View -->
+    <div class="library-view" id="libraryView">
+        <div class="library-header">
+            <h2>My Books</h2>
+            <button class="btn-primary" id="uploadBookBtn">+ Add Book</button>
+        </div>
+
+        <div class="books-grid" id="booksGrid"></div>
+
+        <div id="noBooks" class="empty-message hidden">
+            No books yet. Upload a PDF to get started!
+        </div>
+    </div>
+
+    <!-- Reader View -->
+    <div class="reader-view hidden" id="readerView">
+        <!-- Left Controls Panel -->
+        <div class="reader-controls-panel">
+            <div class="reader-nav-section">
+                <button class="btn-icon" id="backToLibrary" title="Back to Library">
+                    &#8592; Library
+                </button>
+            </div>
+
+            <div class="reader-title-section">
+                <h2 id="currentBookTitle">Book Title</h2>
+            </div>
+
+            <div class="reader-page-section">
+                <div class="reader-page-info">
+                    Page <span id="currentPageNumber">1</span> / <span id="totalPages">1</span>
+                </div>
+                <div class="player-main-controls">
+                    <button class="btn-icon" id="prevPageBtn" title="Previous Page">|&#60;&#60;</button>
+                    <button class="btn-icon btn-play" id="playPauseBtn" title="Play/Pause">Play</button>
+                    <button class="btn-icon" id="nextPageBtn" title="Next Page">&#62;&#62;|</button>
+                </div>
+                <div class="reader-tool-buttons">
+                    <button class="btn-tool" id="bookmarkBtn" title="Add Bookmark">&#128278;</button>
+                    <button class="btn-tool" id="bookmarksListBtn" title="View Bookmarks">&#128209;</button>
+                    <button class="btn-tool" id="sleepTimerBtn" title="Sleep Timer">&#128564;</button>
+                </div>
+                <!-- Quiet inline status (no toasts) shown while audio is being prepared -->
+                <small id="audioPrepStatus" class="audio-prep-status"></small>
+            </div>
+
+            <div class="reader-audio-section">
+                <div class="progress-bar-container vertical">
+                    <span id="currentTime">0:00</span>
+                    <input type="range" class="audio-progress" id="progressBar" min="0" max="100" value="0">
+                    <span id="totalTime">0:00</span>
+                </div>
+            </div>
+
+            <div class="reader-voice-section">
+                <label class="control-label">Voice</label>
+                <div class="custom-dropdown" id="voiceDropdown">
+                    <button class="dropdown-toggle" id="voiceToggle">
+                        <span class="dropdown-avatar" id="voiceAvatar">?</span>
+                        <span class="dropdown-text" id="voiceText">Loading...</span>
+                        <span class="dropdown-arrow">&#9662;</span>
+                    </button>
+                    <div class="dropdown-menu" id="voiceMenu"></div>
+                </div>
+            </div>
+
+            <div class="reader-speed-section">
+                <label class="control-label">Speed</label>
+                <div class="custom-dropdown" id="speedDropdown">
+                    <button class="dropdown-toggle" id="speedToggle">
+                        <span class="dropdown-icon speed-icon">1x</span>
+                        <span class="dropdown-arrow">&#9662;</span>
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-speed" id="speedMenu">
+                        <div class="dropdown-item speed-item" data-value="0.5"><span class="speed-icon">0.5x</span> Slow</div>
+                        <div class="dropdown-item speed-item" data-value="0.75"><span class="speed-icon">0.75x</span> Relaxed</div>
+                        <div class="dropdown-item speed-item selected" data-value="1"><span class="speed-icon">1x</span> Normal</div>
+                        <div class="dropdown-item speed-item" data-value="1.25"><span class="speed-icon">1.25x</span> Faster</div>
+                        <div class="dropdown-item speed-item" data-value="1.5"><span class="speed-icon">1.5x</span> Fast</div>
+                        <div class="dropdown-item speed-item" data-value="2"><span class="speed-icon">2x</span> Turbo</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="reader-font-section">
+                <label class="control-label">Text Size</label>
+                <div class="font-size-controls">
+                    <button class="btn-icon" id="fontSizeDownBtn" title="Smaller Text">A-</button>
+                    <span id="fontSizeLevel">100%</span>
+                    <button class="btn-icon" id="fontSizeUpBtn" title="Larger Text">A+</button>
+                </div>
+            </div>
+
+            <div class="reader-view-section">
+                <label class="control-label">View Mode</label>
+                <div class="view-mode-toggle">
+                    <button class="btn-icon view-mode-btn active" id="bookViewBtn" title="Page View">Page</button>
+                    <button class="btn-icon view-mode-btn" id="textViewBtn" title="List View">List</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Book Content Area -->
+        <div class="reader-content-area">
+            <!-- Thin progress bar: how much of the book is converted to audio -->
+            <div id="audioPrepBar" class="audio-prep-bar hidden">
+                <div class="audio-prep-fill" id="audioPrepFill"></div>
+                <span class="audio-prep-label" id="audioPrepLabel">Preparing audio&hellip;</span>
+            </div>
+
+            <div class="book-reading-area" id="bookReadingArea">
+                <div class="book-page-container" id="bookPageContainer">
+                    <div class="book-page">
+                        <div class="book-page-content" id="bookPageContent"></div>
+                        <div class="book-page-footer">
+                            <span class="page-number-display" id="pageNumberDisplay">Page 1</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-reading-area hidden" id="textReadingArea">
+                <div class="text-reader-container" id="textReaderContainer">
+                    <div class="sentence-list" id="sentenceList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Modals ───────────────────────────────────────────────────────────────── -->
+
+<!-- Upload Book Modal -->
+<div class="modal" id="uploadModal" role="dialog" aria-modal="true">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Upload Book</h2>
+            <button class="modal-close" id="closeUploadModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="file-drop-zone" id="fileDropZone">
+                    <input type="file" id="fileInput" accept=".pdf" hidden>
+                    <div class="drop-zone-content">
+                        <span class="drop-icon">PDF</span>
+                        <p>Drop PDF here or click to select</p>
+                        <p class="file-name" id="selectedFileName"></p>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="bookTitle">Title (optional)</label>
+                    <input type="text" id="bookTitle" placeholder="Book Title">
+                </div>
+
+                <div class="form-group">
+                    <label for="bookAuthor">Author (optional)</label>
+                    <input type="text" id="bookAuthor" placeholder="Author Name">
+                </div>
+
+                <div class="upload-progress hidden" id="uploadProgress">
+                    <div class="progress-bar-mini">
+                        <div class="progress-fill-mini" id="progressFill" style="width: 0%"></div>
+                    </div>
+                    <p id="uploadStatus">Uploading...</p>
+                </div>
+
+                <button type="submit" class="btn-primary" id="uploadSubmitBtn">Upload</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Bookmarks Modal -->
+<div class="modal" id="bookmarksModal" role="dialog" aria-modal="true">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Bookmarks</h2>
+            <button class="modal-close" id="closeBookmarksModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="bookmarksList" class="bookmarks-list"></div>
+            <div id="noBookmarks" class="empty-message">No bookmarks yet</div>
+        </div>
+    </div>
+</div>
+
+<!-- Sleep Timer Modal -->
+<div class="modal" id="sleepTimerModal" role="dialog" aria-modal="true">
+    <div class="modal-content modal-small">
+        <div class="modal-header">
+            <h2>Sleep Timer</h2>
+            <button class="modal-close" id="closeSleepTimerModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="sleep-timer-options">
+                <button class="sleep-option" data-minutes="15">15 min</button>
+                <button class="sleep-option" data-minutes="30">30 min</button>
+                <button class="sleep-option" data-minutes="45">45 min</button>
+                <button class="sleep-option" data-minutes="60">1 hour</button>
+                <button class="sleep-option" data-minutes="0">Off</button>
+            </div>
+            <div id="sleepTimerActive" class="hidden">
+                <p>Timer active: <span id="sleepTimeRemaining">30:00</span></p>
+                <button class="btn-secondary" id="cancelSleepTimer">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Keyboard Shortcuts Modal -->
+<div class="modal" id="shortcutsModal" role="dialog" aria-modal="true">
+    <div class="modal-content modal-small">
+        <div class="modal-header">
+            <h2>Keyboard Shortcuts</h2>
+            <button class="modal-close" id="closeShortcutsModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="shortcuts-list">
+                <div class="shortcut-item"><span>Play / Pause</span><kbd>Space</kbd></div>
+                <div class="shortcut-item"><span>Previous page</span><kbd>&larr;</kbd></div>
+                <div class="shortcut-item"><span>Next page</span><kbd>&rarr;</kbd></div>
+                <div class="shortcut-item"><span>Add bookmark</span><kbd>b</kbd></div>
+                <div class="shortcut-item"><span>Larger text</span><kbd>+</kbd></div>
+                <div class="shortcut-item"><span>Smaller text</span><kbd>-</kbd></div>
+                <div class="shortcut-item"><span>Back to library</span><kbd>Esc</kbd></div>
+                <div class="shortcut-item"><span>Show shortcuts</span><kbd>?</kbd></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loadingOverlay" class="hidden">Loading...</div>
+
+<!-- Toast container -->
+<div id="toastContainer"></div>
+
+<!-- Scripts -->
+<script src="/static/shared.js"></script>
+<script src="/static/book-reader.js"></script>
+</body>
+</html>
