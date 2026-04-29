@@ -33,3 +33,11 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Local AI-assistant artifacts (never commit)
+CLAUDE.md
+BREADCRUMBS.md
+.claude/
+.cursor/
+.aider*
+.continue/
