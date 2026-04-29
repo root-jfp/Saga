@@ -1275,6 +1275,51 @@
     justify-content: center;
     align-items: stretch;
     background: var(--br-bg);
+    position: relative;
+}
+
+/* Click zones on the left/right edges of the reader for prev/next page.
+   Transparent by default, arrow fades in on hover. */
+.page-nav-zone {
+    position: absolute;
+    top: var(--br-s5);
+    bottom: var(--br-s5);
+    width: clamp(48px, 7vw, 96px);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--br-text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+    opacity: 0;
+    transition: opacity var(--br-t-fast), background var(--br-t-fast);
+    padding: 0;
+}
+.page-nav-zone:hover,
+.page-nav-zone:focus-visible {
+    opacity: 1;
+    background: linear-gradient(to right, transparent, rgba(var(--br-accent-rgb),0.06), transparent);
+    outline: none;
+}
+.page-nav-zone:disabled {
+    cursor: default;
+    opacity: 0;
+}
+.page-nav-prev { left: 0; }
+.page-nav-next { right: 0; }
+/* Hide side-of-book nav zones on phones — they'd overlap the text. The
+   sidebar's own |<< / >>| buttons handle navigation on small screens. */
+@media (max-width: 767px) {
+    .page-nav-zone { display: none; }
+}
+.page-nav-arrow {
+    font-family: var(--br-font-serif);
+    font-size: 2.4rem;
+    line-height: 1;
+    color: var(--br-accent);
+    user-select: none;
 }
 
 .book-page-container {
@@ -1285,28 +1330,59 @@
     height: 100%;
 }
 
-/* The book page — warm parchment surface */
+/* The book page — sits on a desk with a stacked-pages edge on the right */
 .book-page {
     width: 100%;
     height: 100%;
     background: var(--br-page-bg);
-    border: 1px solid rgba(var(--br-accent-rgb),0.12);
+    border: 1px solid rgba(var(--br-accent-rgb),0.14);
     border-radius: 2px var(--br-r-md) var(--br-r-md) 2px;
     padding: var(--br-s10) var(--br-s12);
     position: relative;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 2px 16px rgba(0,0,0,0.2);
+    /* Page-stack illusion on the right + soft outer drop shadow.
+       Stack colour mixes the page-bg with a hint of accent so it works in
+       both light and dark themes. */
+    box-shadow:
+        2px 0 0 color-mix(in srgb, var(--br-page-bg) 88%, var(--br-accent) 12%),
+        4px 0 0 color-mix(in srgb, var(--br-page-bg) 78%, var(--br-accent) 22%),
+        6px 0 0 color-mix(in srgb, var(--br-page-bg) 70%, var(--br-accent) 30%),
+        0 6px 28px rgba(0,0,0,0.28);
 }
-/* Spine shadow */
+/* Spine shadow — gutter where pages meet the binding */
 .book-page::before {
     content: '';
     position: absolute;
     left: 0; top: 0; bottom: 0;
-    width: 12px;
-    background: linear-gradient(to right, rgba(0,0,0,0.14) 0%, transparent 100%);
+    width: 14px;
+    background: linear-gradient(
+        to right,
+        rgba(0,0,0,0.18) 0%,
+        rgba(0,0,0,0.06) 40%,
+        transparent 100%
+    );
     border-radius: 2px 0 0 2px;
+    pointer-events: none;
+}
+/* RTL flip: spine moves to the right, page-stack to the left */
+.book-page:has(.book-page-content[dir="rtl"]) {
+    border-radius: var(--br-r-md) 2px 2px var(--br-r-md);
+    box-shadow:
+        -2px 0 0 color-mix(in srgb, var(--br-page-bg) 88%, var(--br-accent) 12%),
+        -4px 0 0 color-mix(in srgb, var(--br-page-bg) 78%, var(--br-accent) 22%),
+        -6px 0 0 color-mix(in srgb, var(--br-page-bg) 70%, var(--br-accent) 30%),
+        0 6px 28px rgba(0,0,0,0.28);
+}
+.book-page:has(.book-page-content[dir="rtl"])::before {
+    left: auto; right: 0;
+    background: linear-gradient(
+        to left,
+        rgba(0,0,0,0.18) 0%,
+        rgba(0,0,0,0.06) 40%,
+        transparent 100%
+    );
 }
 
 .book-page-content {
@@ -1339,6 +1415,7 @@
 }
 .book-page-content p:first-of-type { text-indent: 0; }
 
+
 .book-heading {
     display: block;
     font-size: 1.1em;
@@ -1357,17 +1434,27 @@
 
 .book-paragraph-break { display: block; margin-bottom: 1.2em; }
 
-/* Page footer */
+/* Page footer — three slots: outer-left, centre, outer-right.
+   Single-page mode shows only the centre. Spread mode shows the two outer
+   slots (one for each page) and hides the centre. */
 .book-page-footer {
     margin-top: auto;
     padding-top: var(--br-s6);
-    text-align: center;
     font-family: var(--br-font-serif);
     font-size: 0.8125rem;
     color: var(--br-text-muted);
     font-style: italic;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--br-s4);
 }
 .page-number-display { letter-spacing: 0.05em; }
+.page-number-left,
+.page-number-right { display: none; flex: 1; }
+.page-number-left  { text-align: left; }
+.page-number-right { text-align: right; }
+.page-number-center { flex: 1; text-align: center; }
 
 /* Font size levels */
 .book-page-content.font-size-80  { font-size: 0.9rem; }
@@ -1377,6 +1464,81 @@
 .book-page-content.font-size-120 { font-size: 1.35rem; }
 .book-page-content.font-size-130 { font-size: 1.4625rem; }
 .book-page-content.font-size-140 { font-size: 1.575rem; }
+
+/* ── Two-page spread on wide screens ──────────────────────────────────────────
+   Page N goes in the left column, page N+1 in the right column (forced via a
+   column-break div the renderer inserts between them). The left-edge spine
+   (::before) is repositioned to the centre to act as the binding gutter, and
+   the right-side page-stack box-shadow is dropped because the "open book"
+   silhouette already implies stacked pages on both sides. */
+@media (min-width: 1100px) {
+    .book-page-container {
+        max-width: min(132ch, 100% - 14rem);
+    }
+    .book-page {
+        padding: 3rem 3.5rem;
+        border-radius: var(--br-r-md);
+        /* No page-stack edge in spread mode — just a clean outer drop shadow */
+        box-shadow: 0 6px 28px rgba(0,0,0,0.32);
+    }
+    /* Move spine from left edge to the centre (the binding) */
+    .book-page::before {
+        left: 50%;
+        transform: translateX(-50%);
+        width: 28px;
+        background: linear-gradient(
+            to right,
+            transparent 0%,
+            rgba(0,0,0,0.10) 30%,
+            rgba(0,0,0,0.20) 50%,
+            rgba(0,0,0,0.10) 70%,
+            transparent 100%
+        );
+        border-radius: 0;
+    }
+    .book-page-content {
+        column-count: 2;
+        column-gap: 4rem;
+        column-rule: 1px solid rgba(var(--br-accent-rgb),0.10);
+        /* column-fill: auto + a definite height = left column fills first,
+           right column starts at the page-break div the renderer inserts */
+        column-fill: auto;
+        overflow: hidden;
+    }
+    /* Forced column break that separates page N (left) from page N+1 (right) */
+    .spread-page-break {
+        break-before: column;
+        height: 0;
+        margin: 0;
+        padding: 0;
+    }
+    /* Right-page preview sentences — slightly dimmer than the active page,
+       hover restores full intensity */
+    .spread-preview .book-sentence,
+    .spread-preview .book-heading {
+        opacity: 0.78;
+    }
+    .spread-preview .book-sentence:hover,
+    .spread-preview .book-heading:hover {
+        opacity: 1;
+    }
+    /* Headings span both pages so chapter titles aren't half-cut */
+    .book-page-content > h3.book-heading {
+        column-span: all;
+    }
+    /* Spread footer: hide the centre slot, show outer page numbers */
+    .page-number-center { display: none; }
+    .page-number-left,
+    .page-number-right { display: block; }
+
+    /* RTL spread — column flow naturally goes right-to-left because of dir,
+       but make the centre spine still draw from the centre */
+    .book-page:has(.book-page-content[dir="rtl"])::before {
+        left: 50%;
+        right: auto;
+        transform: translateX(-50%);
+    }
+}
 
 /* ── PDF reading area ────────────────────────────────────────────────────────── */
 .pdf-reading-area {

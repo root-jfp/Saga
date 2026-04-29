@@ -3,7 +3,7 @@
     if (!('serviceWorker' in navigator)) return;
     window.addEventListener('load', () => {
         navigator.serviceWorker
-            .register('/static/sw.js', { scope: '/' })
+            .register('/sw.js', { scope: '/' })
             .then((reg) => {
                 // Auto-update if a new worker is found.
                 reg.addEventListener('updatefound', () => {

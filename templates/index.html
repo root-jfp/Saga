@@ -210,14 +210,22 @@
             </div>
 
             <div class="book-reading-area" id="bookReadingArea">
+                <button type="button" class="page-nav-zone page-nav-prev" id="pageNavPrev" onclick="prevPage()" aria-label="Previous page">
+                    <span class="page-nav-arrow" aria-hidden="true">&lsaquo;</span>
+                </button>
                 <div class="book-page-container" id="bookPageContainer">
                     <div class="book-page">
                         <div class="book-page-content" id="bookPageContent"></div>
                         <div class="book-page-footer">
-                            <span class="page-number-display" id="pageNumberDisplay">Page 1</span>
+                            <span class="page-number-display page-number-left" id="pageNumberDisplayLeft"></span>
+                            <span class="page-number-display page-number-center" id="pageNumberDisplay">Page 1</span>
+                            <span class="page-number-display page-number-right" id="pageNumberDisplayRight"></span>
                         </div>
                     </div>
                 </div>
+                <button type="button" class="page-nav-zone page-nav-next" id="pageNavNext" onclick="nextPage()" aria-label="Next page">
+                    <span class="page-nav-arrow" aria-hidden="true">&rsaquo;</span>
+                </button>
             </div>
 
             <div class="text-reading-area hidden" id="textReadingArea">

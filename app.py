@@ -14,7 +14,7 @@ import argparse
 import logging
 from datetime import datetime
 
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, send_from_directory
 from flask_cors import CORS
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -65,6 +65,19 @@ def index():
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'service': 'book-reader'})
+
+# Service worker must be served from the site root so its default scope
+# covers the whole app — otherwise the browser limits scope to /static/.
+@app.route('/sw.js')
+def service_worker():
+    response = send_from_directory('static', 'sw.js', mimetype='application/javascript')
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+@app.route('/manifest.webmanifest')
+def manifest():
+    return send_from_directory('static', 'manifest.webmanifest',
+                               mimetype='application/manifest+json')
 
 # ── API blueprints ────────────────────────────────────────────────────────────
 

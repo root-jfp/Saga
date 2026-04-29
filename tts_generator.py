@@ -8,6 +8,7 @@ TTS Audio Generation with multiple backends:
 import subprocess
 import os
 import re
+import sys
 import wave
 import asyncio
 import time
@@ -16,6 +17,11 @@ import logging
 from pathlib import Path
 
 logger = logging.getLogger('book-reader')
+
+# On Windows, suppress the brief console window that flashes when child
+# processes (ffmpeg/ffprobe) are spawned from a GUI-launched server
+# (pythonw.exe). No-op on other platforms.
+_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if sys.platform == 'win32' else 0
 
 # Try to import Edge TTS (best quality)
 try:
@@ -621,7 +627,8 @@ class TTSGenerator:
                  '-of', 'default=noprint_wrappers=1:nokey=1', audio_path],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=10,
+                creationflags=_NO_WINDOW,
             )
             if result.returncode == 0:
                 return float(result.stdout.strip())
@@ -645,7 +652,8 @@ class TTSGenerator:
                 ['ffmpeg', '-y', '-i', wav_path, '-acodec', 'libmp3lame',
                  '-ab', '128k', mp3_path],
                 capture_output=True,
-                timeout=120
+                timeout=120,
+                creationflags=_NO_WINDOW,
             )
             if result.returncode == 0:
                 return True

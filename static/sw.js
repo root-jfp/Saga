@@ -9,7 +9,7 @@
  *     cache so we don't fill the device.
  */
 
-const VERSION = 'saga-v1';
+const VERSION = 'saga-v2';
 const SHELL_CACHE  = `${VERSION}-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const API_CACHE    = `${VERSION}-api`;
@@ -71,13 +71,18 @@ async function networkFirstApi(request) {
     }
 }
 
-async function cacheFirstStatic(request) {
+async function staleWhileRevalidateStatic(request) {
     const cache = await caches.open(STATIC_CACHE);
     const cached = await cache.match(request);
-    if (cached) return cached;
-    const fresh = await fetch(request);
-    if (fresh && fresh.ok) cache.put(request, fresh.clone()).catch(() => {});
-    return fresh;
+    // Always kick off a network fetch in the background to refresh the
+    // cache, so the next visit gets the new code without needing the user
+    // to manually clear the cache. Cache-first alone causes JS/CSS edits
+    // to never reach the browser until the SW VERSION is bumped.
+    const networkPromise = fetch(request).then((fresh) => {
+        if (fresh && fresh.ok) cache.put(request, fresh.clone()).catch(() => {});
+        return fresh;
+    }).catch(() => null);
+    return cached || networkPromise;
 }
 
 async function audioCachedFirst(request) {
@@ -108,9 +113,9 @@ self.addEventListener('fetch', (event) => {
         event.respondWith(networkFirstApi(req));
         return;
     }
-    // Static assets
+    // Static assets — stale-while-revalidate so updates apply on next visit
     if (url.pathname.startsWith('/static/')) {
-        event.respondWith(cacheFirstStatic(req));
+        event.respondWith(staleWhileRevalidateStatic(req));
         return;
     }
     // App shell — try network, then cached '/'

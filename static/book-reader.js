@@ -24,6 +24,7 @@ let bookmarks = [];
 
 // Page content state
 let pageSentences = [];
+let previewSentences = [];  // Next-page sentences shown in right column in spread mode
 let audioTiming = [];  // Real timing data from TTS: [{text, offset, duration}, ...]
 
 // Voice state
@@ -106,6 +107,18 @@ async function init() {
         updateFontSizeDisplay();
         setViewMode(currentViewMode);  // Initialize view mode
         hideLoading();
+
+        // If the URL contains #book/<id>, restore that book — survives refresh.
+        const hashBookId = _bookIdFromHash();
+        if (hashBookId) {
+            const inLibrary = Array.isArray(books) && books.some(b => b.id === hashBookId);
+            if (inLibrary) {
+                await openBook(hashBookId);
+            } else {
+                // Book isn't in this user's library (different user, deleted, etc.)
+                _clearBookHash();
+            }
+        }
     } catch (error) {
         console.error('Saga init error:', error);
         hideLoading();
@@ -557,6 +570,32 @@ function updateBookAudioProgress(bookId, progress) {
     }
 }
 
+// ── URL-hash routing ───────────────────────────────────────────────────────
+// The hash `#book/<id>` records which book is open so a page refresh
+// re-opens it. Per-page position within the book is already remembered by
+// the server-side book_progress table (saveProgress / current_page).
+function _setBookHash(bookId) {
+    const target = '#book/' + bookId;
+    if (location.hash === target) return;
+    if (history && history.replaceState) {
+        history.replaceState(null, '', target);
+    } else {
+        location.hash = target;
+    }
+}
+function _clearBookHash() {
+    if (!location.hash) return;
+    if (history && history.replaceState) {
+        history.replaceState(null, '', location.pathname + location.search);
+    } else {
+        location.hash = '';
+    }
+}
+function _bookIdFromHash() {
+    const m = (location.hash || '').match(/^#book\/(\d+)/);
+    return m ? parseInt(m[1], 10) : null;
+}
+
 async function openBook(bookId) {
     showLoading();
 
@@ -598,6 +637,7 @@ async function openBook(bookId) {
 
         switchView('reader');
         updateReaderHeader();
+        _setBookHash(bookId);
 
         // Start in-reader audio progress bar (hides itself when generation complete)
         if (currentBook.audio_generation_status !== 'completed') {
@@ -642,6 +682,14 @@ async function renderPage(pageNumber) {
     }
 }
 
+// True when the viewport is wide enough for the two-page spread layout.
+// Mirrors the CSS @media (min-width: 1100px) breakpoint.
+function _isSpreadMode() {
+    return typeof window !== 'undefined'
+        && window.matchMedia
+        && window.matchMedia('(min-width: 1100px)').matches;
+}
+
 async function loadPageSentences(pageNumber) {
     try {
         const response = await fetch(`${API_BASE}/books/${currentBook.id}/pages/${pageNumber}`);
@@ -664,11 +712,32 @@ async function loadPageSentences(pageNumber) {
         // Reset current sentence index for new page
         currentSentenceIndex = 0;
 
-        // Update page number in book view footer
-        const pageNumberDisplay = document.getElementById('pageNumberDisplay');
-        if (pageNumberDisplay) {
-            pageNumberDisplay.textContent = `Page ${pageNumber}`;
+        // In two-page spread mode, also fetch the next page's sentences so
+        // they can be displayed in the right column as a "preview". Audio
+        // still plays only for the current page.
+        previewSentences = [];
+        const total = (currentBook && currentBook.total_pages) || 0;
+        if (_isSpreadMode() && pageNumber < total) {
+            try {
+                const r2 = await fetch(`${API_BASE}/books/${currentBook.id}/pages/${pageNumber + 1}`);
+                if (r2.ok) {
+                    const d2 = await r2.json();
+                    if (d2 && d2.sentences && Array.isArray(d2.sentences)) {
+                        previewSentences = d2.sentences;
+                    } else if (typeof d2.sentences === 'string') {
+                        try {
+                            const parsed = JSON.parse(d2.sentences);
+                            if (Array.isArray(parsed)) previewSentences = parsed;
+                        } catch (_) { /* ignore */ }
+                    }
+                }
+            } catch (e) {
+                console.warn('[saga] preview page fetch failed:', e);
+            }
         }
+
+        // Update page numbers — single-page footer + spread footer slots
+        _updatePageNumberFooters(pageNumber);
 
         // Render sentences in appropriate view
         if (currentViewMode === 'book') {
@@ -679,7 +748,24 @@ async function loadPageSentences(pageNumber) {
     } catch (error) {
         console.error('Failed to load page sentences:', error);
         pageSentences = [];
+        previewSentences = [];
         audioTiming = [];
+    }
+}
+
+function _updatePageNumberFooters(pageNumber) {
+    const center = document.getElementById('pageNumberDisplay');
+    const left = document.getElementById('pageNumberDisplayLeft');
+    const right = document.getElementById('pageNumberDisplayRight');
+    if (center) center.textContent = `Page ${pageNumber}`;
+    if (left)   left.textContent   = `Page ${pageNumber}`;
+    if (right) {
+        // Always show "Page N+1" on the right when in spread mode and a next
+        // page exists — independent of whether the preview content has
+        // finished loading.
+        const total = (currentBook && currentBook.total_pages) || 0;
+        const showRight = _isSpreadMode() && pageNumber < total;
+        right.textContent = showRight ? `Page ${pageNumber + 1}` : '';
     }
 }
 
@@ -1156,10 +1242,94 @@ function renderBookSentences() {
         html += '</p>';
     }
 
+    // Two-page spread: append the next page's sentences in a right-side
+    // preview after a forced column break. Click handlers on preview
+    // sentences advance to that page first, then seek.
+    if (_isSpreadMode() && previewSentences.length > 0) {
+        html += '<div class="spread-page-break" aria-hidden="true"></div>';
+        html += '<div class="spread-preview">';
+        let pInPara = false;
+        previewSentences.forEach((sentence, index) => {
+            const text = (sentence.text || '').trim();
+            if (!text) return;
+
+            const isHeading = sentence.is_heading === true;
+            const hasStructured = typeof sentence.is_paragraph_start !== 'undefined';
+            const startsPara = hasStructured ? sentence.is_paragraph_start === true : index === 0;
+
+            if ((startsPara || isHeading) && pInPara) {
+                html += '</p>';
+                pInPara = false;
+            }
+            if (isHeading) {
+                html += `<h3 class="book-heading" data-preview-index="${index}" onclick="seekToPreviewSentence(${index})">${escapeHtml(text)}</h3>`;
+            } else {
+                if (!pInPara) { html += '<p>'; pInPara = true; }
+                html += `<span class="book-sentence" data-preview-index="${index}" onclick="seekToPreviewSentence(${index})">${escapeHtml(text)}</span> `;
+            }
+        });
+        if (pInPara) html += '</p>';
+        html += '</div>';
+    }
+
     bookPageContent.innerHTML = html;
 
     // Apply current font size
     updateFontSizeDisplay();
+}
+
+// Click handler for sentences in the right-side preview (page N+1).
+// Advance to that page, then seek to the clicked sentence.
+async function seekToPreviewSentence(index) {
+    const total = (currentBook && currentBook.total_pages) || 0;
+    if (currentPage >= total) return;
+    showLoading();
+    try {
+        await renderPage(currentPage + 1);
+    } finally {
+        hideLoading();
+    }
+    // After renderPage, currentPage is now the previously-previewed page,
+    // and pageSentences holds its sentences. Seek to the clicked index.
+    seekToSentence(index);
+}
+
+// When the viewport crosses the spread breakpoint, refresh the visual layout
+// without going through renderPage — that would reload the audio and
+// interrupt playback. We just (re)fetch the preview page if needed and
+// re-render the sentences.
+if (typeof window !== 'undefined' && window.matchMedia) {
+    const _spreadMQ = window.matchMedia('(min-width: 1100px)');
+    const _onSpreadChange = async () => {
+        if (typeof currentBook === 'undefined' || !currentBook || typeof currentPage !== 'number') return;
+        if (_isSpreadMode()) {
+            const total = currentBook.total_pages || 0;
+            if (currentPage < total) {
+                try {
+                    const r = await fetch(`${API_BASE}/books/${currentBook.id}/pages/${currentPage + 1}`);
+                    if (r.ok) {
+                        const d = await r.json();
+                        previewSentences = Array.isArray(d.sentences) ? d.sentences : [];
+                    } else {
+                        previewSentences = [];
+                    }
+                } catch (e) {
+                    previewSentences = [];
+                }
+            } else {
+                previewSentences = [];
+            }
+        } else {
+            previewSentences = [];
+        }
+        _updatePageNumberFooters(currentPage);
+        if (currentViewMode === 'book') renderBookSentences();
+    };
+    if (_spreadMQ.addEventListener) {
+        _spreadMQ.addEventListener('change', _onSpreadChange);
+    } else if (_spreadMQ.addListener) {
+        _spreadMQ.addListener(_onSpreadChange);
+    }
 }
 
 function renderSentences() {
@@ -1255,6 +1425,13 @@ function updateReaderHeader() {
 function updatePageInfo() {
     document.getElementById('currentPageNumber').textContent = currentPage;
     document.getElementById('totalPages').textContent = currentBook.total_pages || '?';
+
+    // Disable side nav buttons at the first/last page boundaries
+    const total = currentBook.total_pages || 1;
+    const prevBtn = document.getElementById('pageNavPrev');
+    const nextBtn = document.getElementById('pageNavNext');
+    if (prevBtn) prevBtn.disabled = currentPage <= 1;
+    if (nextBtn) nextBtn.disabled = currentPage >= total;
 }
 
 async function prevPage() {
@@ -1820,6 +1997,9 @@ function switchView(view) {
             currentAudio.pause();
             isPlaying = false;
         }
+        // Drop the #book/<id> hash so a refresh on the library doesn't
+        // jump straight back into the last book.
+        _clearBookHash();
     } else {
         if (libraryView) libraryView.classList.add('hidden');
         if (readerView) readerView.classList.remove('hidden');
