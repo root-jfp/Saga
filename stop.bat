@@ -6,4 +6,4 @@ if errorlevel 1 (
 )
 
 taskkill /f /im pythonw.exe /t > nul 2>&1
-echo Book Reader stopped.
+echo Saga stopped.

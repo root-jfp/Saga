@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Book Reader</title>
+    <title>Saga</title>
 
     <!-- PDF.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -12,15 +12,22 @@
     <!-- Styles -->
     <link rel="stylesheet" href="/static/css/luminance.css">
     <link rel="stylesheet" href="/static/css/books.css">
+    <link rel="stylesheet" href="/static/css/upgrades.css">
 
+    <!-- PWA -->
+    <link rel="manifest" href="/static/manifest.webmanifest">
+    <meta name="theme-color" content="#7c3aed">
+    <link rel="icon" type="image/svg+xml" href="/static/pwa/icon-192.svg">
+    <link rel="apple-touch-icon" href="/static/pwa/icon-192.svg">
 </head>
 <body class="dark-theme">
 
 <!-- ── App Header ──────────────────────────────────────────────────────────── -->
 <header class="app-header">
-    <h1>Book Reader</h1>
+    <h1>Saga</h1>
     <div class="header-actions">
         <div class="user-pills" id="userPills"></div>
+        <button class="theme-btn" id="manageUsersBtn" title="Manage users" aria-label="Manage users">&#9881;</button>
         <button class="theme-btn" id="themeToggle" title="Toggle theme">☀</button>
     </div>
 </header>
@@ -36,15 +43,58 @@
 
     <!-- Library View -->
     <div class="library-view" id="libraryView">
-        <div class="library-header">
-            <h2>My Books</h2>
-            <button class="btn-primary" id="uploadBookBtn">+ Add Book</button>
+        <!-- Category browser (Netflix-style "Who's reading?" landing) -->
+        <div class="category-browser" id="categoryBrowser">
+            <div class="library-header">
+                <h2 id="libraryHeading">My Library</h2>
+                <div class="library-header-actions">
+                    <button class="btn-secondary" id="statsBtn" title="Reading stats">📊 Stats</button>
+                    <button class="btn-secondary" id="manageCategoriesBtn">Manage categories</button>
+                    <button class="btn-primary" id="uploadBookBtn">+ Add Book</button>
+                </div>
+            </div>
+
+            <!-- Continue listening shelf -->
+            <div class="shelf hidden" id="continueShelf"></div>
+
+            <!-- Library search + filters -->
+            <div class="library-toolbar">
+                <input type="search" id="librarySearchInput" class="library-search" placeholder="Search title, author, subject…">
+                <select id="librarySortSelect" class="library-select" title="Sort">
+                    <option value="recent">Recently read</option>
+                    <option value="created">Recently added</option>
+                    <option value="title">Title A→Z</option>
+                    <option value="author">Author A→Z</option>
+                    <option value="progress">Most progress</option>
+                </select>
+                <select id="libraryStatusFilter" class="library-select" title="Status">
+                    <option value="">Active</option>
+                    <option value="reading">Reading</option>
+                    <option value="finished">Finished</option>
+                    <option value="archived">Archived</option>
+                </select>
+                <select id="libraryLangFilter" class="library-select" title="Language">
+                    <option value="">All languages</option>
+                </select>
+            </div>
+
+            <div class="category-grid" id="categoryGrid"></div>
         </div>
 
-        <div class="books-grid" id="booksGrid"></div>
-
-        <div id="noBooks" class="empty-message hidden">
-            No books yet. Upload a PDF to get started!
+        <!-- Books inside a category (or "All / Uncategorised") -->
+        <div class="category-contents hidden" id="categoryContents">
+            <div class="library-header">
+                <button class="btn-icon back-btn" id="backToCategories">&#8592; Categories</button>
+                <h2 id="categoryContentsTitle">Category</h2>
+                <div class="library-header-actions">
+                    <button class="btn-primary" id="uploadBookBtnInside">+ Add Book</button>
+                </div>
+            </div>
+            <div class="subcategory-strip" id="subcategoryStrip"></div>
+            <div class="books-grid" id="booksGrid"></div>
+            <div id="noBooks" class="empty-message hidden">
+                No books in this category yet.
+            </div>
         </div>
     </div>
 
@@ -74,8 +124,20 @@
                 <div class="reader-tool-buttons">
                     <button class="btn-tool" id="bookmarkBtn" title="Add Bookmark">&#128278;</button>
                     <button class="btn-tool" id="bookmarksListBtn" title="View Bookmarks">&#128209;</button>
+                    <button class="btn-tool" id="tocBtn" title="Chapters">&#128214;</button>
                     <button class="btn-tool" id="sleepTimerBtn" title="Sleep Timer">&#128564;</button>
+                    <button class="btn-tool" id="regenerateAudioBtn" title="Regenerate audio for this book">&#10227;</button>
                 </div>
+                <!-- Audiobook-grade transport -->
+                <div class="reader-skip-buttons">
+                    <button class="btn-icon btn-skip" id="skipBackBtn" title="Skip back 15s">−15s</button>
+                    <button class="btn-icon btn-skip" id="skipFwdBtn"  title="Skip forward 30s">+30s</button>
+                </div>
+                <div class="reader-rate-section">
+                    <label class="control-label" for="playbackRateSlider">Speed <span id="playbackRateValue">1.00×</span></label>
+                    <input type="range" id="playbackRateSlider" min="0.5" max="3" step="0.05" value="1">
+                </div>
+                <small id="sleepTimerStatus" class="sleep-timer-status"></small>
                 <!-- Quiet inline status (no toasts) shown while audio is being prepared -->
                 <small id="audioPrepStatus" class="audio-prep-status"></small>
             </div>
@@ -135,6 +197,9 @@
                 </div>
             </div>
         </div>
+
+        <!-- Slide-out chapter (TOC) panel -->
+        <aside class="toc-panel hidden" id="tocPanel"></aside>
 
         <!-- Right Book Content Area -->
         <div class="reader-content-area">
@@ -229,17 +294,35 @@
             <button class="modal-close" id="closeSleepTimerModal" aria-label="Close">&times;</button>
         </div>
         <div class="modal-body">
+            <p class="upload-hint">Audio fades out gently in the last 30 seconds.</p>
             <div class="sleep-timer-options">
-                <button class="sleep-option" data-minutes="15">15 min</button>
-                <button class="sleep-option" data-minutes="30">30 min</button>
-                <button class="sleep-option" data-minutes="45">45 min</button>
-                <button class="sleep-option" data-minutes="60">1 hour</button>
-                <button class="sleep-option" data-minutes="0">Off</button>
+                <button class="sleep-option" data-sleep-minutes="15">15 min</button>
+                <button class="sleep-option" data-sleep-minutes="30">30 min</button>
+                <button class="sleep-option" data-sleep-minutes="45">45 min</button>
+                <button class="sleep-option" data-sleep-minutes="60">1 hour</button>
+                <button class="sleep-option" id="cancelSleepBtn">Cancel</button>
             </div>
-            <div id="sleepTimerActive" class="hidden">
-                <p>Timer active: <span id="sleepTimeRemaining">30:00</span></p>
-                <button class="btn-secondary" id="cancelSleepTimer">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- Reading Stats Modal -->
+<div class="modal" id="statsModal" role="dialog" aria-modal="true">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Reading Stats</h2>
+            <button class="modal-close" id="closeStatsModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="stats-grid">
+                <div class="stat-tile"><div class="stat-num" id="statTotalBooks">0</div><div class="stat-lbl">Total books</div></div>
+                <div class="stat-tile"><div class="stat-num" id="statReading">0</div><div class="stat-lbl">Reading</div></div>
+                <div class="stat-tile"><div class="stat-num" id="statFinished">0</div><div class="stat-lbl">Finished</div></div>
+                <div class="stat-tile"><div class="stat-num" id="statHours">0</div><div class="stat-lbl">Hours · 30 days</div></div>
+                <div class="stat-tile"><div class="stat-num" id="statActiveDays">0</div><div class="stat-lbl">Active days</div></div>
+                <div class="stat-tile"><div class="stat-num" id="statPages">0</div><div class="stat-lbl">Pages read</div></div>
             </div>
+            <canvas id="statsTimeline" class="stats-canvas"></canvas>
         </div>
     </div>
 </div>
@@ -266,6 +349,97 @@
     </div>
 </div>
 
+<!-- Manage Categories Modal -->
+<div class="modal" id="categoriesModal" role="dialog" aria-modal="true">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Manage Categories</h2>
+            <button class="modal-close" id="closeCategoriesModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <ul id="categoriesList" class="categories-list"></ul>
+
+            <form id="createCategoryForm" class="category-create-form">
+                <h3 class="user-form-title" id="categoryFormTitle">New category</h3>
+                <input type="hidden" id="categoryEditId" value="">
+                <div class="form-group">
+                    <label for="newCategoryName">Name</label>
+                    <input type="text" id="newCategoryName" maxlength="120" placeholder="e.g. Fantasy" required>
+                </div>
+                <div class="form-group">
+                    <label for="newCategoryParent">Sub-category of (optional)</label>
+                    <select id="newCategoryParent">
+                        <option value="">— top level —</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Visual</label>
+                    <div class="category-visual-tabs">
+                        <button type="button" class="visual-tab active" data-tab="preset">Preset</button>
+                        <button type="button" class="visual-tab" data-tab="emoji">Emoji</button>
+                        <button type="button" class="visual-tab" data-tab="upload">Upload image</button>
+                    </div>
+                    <div class="visual-pane visual-pane-preset" id="visualPanePreset">
+                        <div class="preset-grid" id="presetGrid"></div>
+                    </div>
+                    <div class="visual-pane visual-pane-emoji hidden" id="visualPaneEmoji">
+                        <input type="text" id="newCategoryEmoji" maxlength="16" placeholder="e.g. 🐉">
+                    </div>
+                    <div class="visual-pane visual-pane-upload hidden" id="visualPaneUpload">
+                        <input type="file" id="newCategoryImage" accept="image/*">
+                        <p class="upload-hint">Upload available after the category is created.</p>
+                    </div>
+                </div>
+                <div class="category-form-actions">
+                    <button type="button" class="btn-secondary hidden" id="cancelCategoryEditBtn">Cancel edit</button>
+                    <button type="submit" class="btn-primary" id="saveCategoryBtn">Create category</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Assign Category Modal -->
+<div class="modal" id="assignCategoryModal" role="dialog" aria-modal="true">
+    <div class="modal-content modal-small">
+        <div class="modal-header">
+            <h2>Move book to category</h2>
+            <button class="modal-close" id="closeAssignCategoryModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p id="assignCategoryBookTitle" class="assign-book-title">Book title</p>
+            <ul id="assignCategoryList" class="categories-list compact"></ul>
+        </div>
+    </div>
+</div>
+
+<!-- Manage Users Modal -->
+<div class="modal" id="usersModal" role="dialog" aria-modal="true">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Manage Users</h2>
+            <button class="modal-close" id="closeUsersModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <ul id="usersList" class="users-list"></ul>
+            <div id="noUsersMessage" class="empty-message hidden">No users yet</div>
+
+            <form id="createUserForm" class="user-create-form">
+                <h3 class="user-form-title">Add a user</h3>
+                <div class="form-group">
+                    <label for="newUserName">Name</label>
+                    <input type="text" id="newUserName" placeholder="e.g. Timothy" maxlength="60" required>
+                </div>
+                <div class="form-group">
+                    <label for="newUserAvatar">Avatar (single emoji)</label>
+                    <input type="text" id="newUserAvatar" placeholder="📚" maxlength="4" value="📚">
+                </div>
+                <button type="submit" class="btn-primary" id="createUserSubmitBtn">Create user</button>
+            </form>
+        </div>
+    </div>
+</div>
+
 <!-- Loading overlay -->
 <div id="loadingOverlay" class="hidden">Loading...</div>
 
@@ -275,5 +449,12 @@
 <!-- Scripts -->
 <script src="/static/shared.js"></script>
 <script src="/static/book-reader.js"></script>
+<script src="/static/js/continue-listening.js"></script>
+<script src="/static/js/library-search.js"></script>
+<script src="/static/js/toc-panel.js"></script>
+<script src="/static/js/reader-controls.js"></script>
+<script src="/static/js/stats-dashboard.js"></script>
+<script src="/static/js/upgrades-glue.js"></script>
+<script src="/static/pwa-register.js"></script>
 </body>
 </html>

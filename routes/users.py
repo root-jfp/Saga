@@ -1,4 +1,4 @@
-"""Simple user management for the Book Reader microservice."""
+"""Simple user management for the Saga microservice."""
 
 from flask import Blueprint, request, jsonify
 from utils.db import get_db_connection, release_connection, row_to_dict, rows_to_dict_list

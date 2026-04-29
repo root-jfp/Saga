@@ -1,4 +1,4 @@
--- Book Reader Microservice Schema
+-- Saga Microservice Schema
 -- Run once to initialise the database.
 
 -- ── Users ─────────────────────────────────────────────────────────────────────
@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS books (
     upload_status VARCHAR(20) DEFAULT 'pending'
         CHECK (upload_status IN ('pending', 'processing', 'ready', 'failed')),
     processing_error TEXT,
+    -- Language detection
+    detected_language VARCHAR(10),
     -- Audio generation tracking
     audio_generation_status VARCHAR(20) DEFAULT 'pending'
         CHECK (audio_generation_status IN ('pending', 'in_progress', 'completed', 'failed')),
@@ -118,10 +120,71 @@ CREATE TABLE IF NOT EXISTS book_audio_jobs (
     UNIQUE(book_id, page_number, settings_hash)
 );
 
+-- ── Book Categories ───────────────────────────────────────────────────────────
+-- Per-user collections (Fantasy, Sci-Fi, Self-Help...). Categories may nest
+-- one level via parent_id (e.g. Fantasy → High Fantasy). A book is assigned
+-- to at most one category at a time.
+
+CREATE TABLE IF NOT EXISTS book_categories (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    parent_id INTEGER REFERENCES book_categories(id) ON DELETE CASCADE,
+    name VARCHAR(120) NOT NULL,
+    emoji VARCHAR(16),               -- single emoji like '🐉'
+    image_path VARCHAR(1000),        -- user-uploaded image
+    preset_image VARCHAR(60),        -- preset key (e.g. 'fantasy', 'scifi')
+    sort_order INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, parent_id, name)
+);
+
+-- ── Idempotent column additions (for existing DBs) ───────────────────────────
+
+ALTER TABLE books ADD COLUMN IF NOT EXISTS detected_language VARCHAR(10);
+ALTER TABLE books ADD COLUMN IF NOT EXISTS category_id INTEGER
+    REFERENCES book_categories(id) ON DELETE SET NULL;
+
+-- Open Library / Google Books enrichment
+ALTER TABLE books ADD COLUMN IF NOT EXISTS isbn VARCHAR(20);
+ALTER TABLE books ADD COLUMN IF NOT EXISTS published_year INTEGER;
+ALTER TABLE books ADD COLUMN IF NOT EXISTS subtitle VARCHAR(500);
+ALTER TABLE books ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE books ADD COLUMN IF NOT EXISTS subjects TEXT;          -- pipe-delimited OL subjects
+ALTER TABLE books ADD COLUMN IF NOT EXISTS open_library_id VARCHAR(40);
+ALTER TABLE books ADD COLUMN IF NOT EXISTS metadata_source VARCHAR(40);
+ALTER TABLE books ADD COLUMN IF NOT EXISTS metadata_fetched_at TIMESTAMP;
+
+-- Reading lifecycle
+ALTER TABLE books ADD COLUMN IF NOT EXISTS read_status VARCHAR(20) DEFAULT 'reading'
+    CHECK (read_status IN ('reading','finished','archived'));
+
+-- Table of contents (PyMuPDF outline) — JSON array of {title, page, level}.
+ALTER TABLE books ADD COLUMN IF NOT EXISTS toc JSONB;
+
+-- Per-user, per-language voice override (used when book has no per-book voice).
+CREATE TABLE IF NOT EXISTS user_language_voices (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    language VARCHAR(10) NOT NULL,
+    voice_id VARCHAR(100) NOT NULL,
+    PRIMARY KEY (user_id, language)
+);
+
+-- Daily aggregated reading sessions (light, append-only stats source)
+CREATE TABLE IF NOT EXISTS reading_sessions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    session_date DATE NOT NULL,
+    seconds_listened INTEGER DEFAULT 0,
+    pages_read INTEGER DEFAULT 0,
+    UNIQUE (user_id, book_id, session_date)
+);
+
 -- ── Indexes ───────────────────────────────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_books_user_id ON books(user_id);
 CREATE INDEX IF NOT EXISTS idx_books_upload_status ON books(upload_status);
+CREATE INDEX IF NOT EXISTS idx_books_language ON books(detected_language);
 CREATE INDEX IF NOT EXISTS idx_book_pages_book_id ON book_pages(book_id);
 CREATE INDEX IF NOT EXISTS idx_book_pages_audio_status ON book_pages(audio_status);
 CREATE INDEX IF NOT EXISTS idx_book_progress_user_id ON book_progress(user_id);
@@ -133,3 +196,9 @@ CREATE INDEX IF NOT EXISTS idx_annotations_user_id ON annotations(user_id);
 CREATE INDEX IF NOT EXISTS idx_book_audio_jobs_book_id ON book_audio_jobs(book_id);
 CREATE INDEX IF NOT EXISTS idx_book_audio_jobs_status ON book_audio_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_book_audio_jobs_priority ON book_audio_jobs(priority DESC, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_book_categories_user ON book_categories(user_id);
+CREATE INDEX IF NOT EXISTS idx_book_categories_parent ON book_categories(parent_id);
+CREATE INDEX IF NOT EXISTS idx_books_category ON books(category_id);
+CREATE INDEX IF NOT EXISTS idx_books_read_status ON books(read_status);
+CREATE INDEX IF NOT EXISTS idx_reading_sessions_user_date ON reading_sessions(user_id, session_date);
+CREATE INDEX IF NOT EXISTS idx_reading_sessions_book ON reading_sessions(book_id);

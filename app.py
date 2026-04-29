@@ -1,5 +1,5 @@
 """
-Book Reader Microservice
+Saga Microservice
 Standalone Flask app — runs independently of the Life Planner.
 
 Usage:
@@ -44,7 +44,7 @@ def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        with open(schema_path, 'r') as f:
+        with open(schema_path, 'r', encoding='utf-8') as f:
             cur.execute(f.read())
         conn.commit()
         logger.info("Database initialised")
@@ -125,5 +125,5 @@ if __name__ == '__main__':
     logger.info("Starting audio worker thread...")
     _start_audio_worker_thread()
 
-    logger.info(f"Starting Book Reader on http://{args.host}:{args.port}")
+    logger.info(f"Starting Saga on http://{args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=False, threaded=True)

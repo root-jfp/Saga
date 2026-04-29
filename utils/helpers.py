@@ -1,4 +1,4 @@
-"""Helper utilities for the Book Reader microservice."""
+"""Helper utilities for the Saga microservice."""
 
 import html
 import logging

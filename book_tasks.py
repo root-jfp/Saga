@@ -1,5 +1,5 @@
 """
-Background Task Processing for Book Reader
+Background Task Processing for Saga
 - Process uploaded PDFs (extract text, pages)
 - Queue audio generation for background worker
 - Runs in separate threads to avoid blocking
@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 from pdf_processor import PDFProcessor
 from tts_generator import TTSGenerator
+from language_detector import detect_language
 
 load_dotenv()
 
@@ -130,8 +131,8 @@ class BookProcessor:
 
             # Generate thumbnail from first page
             thumbnail_path = None
+            thumbnails_dir = os.path.join(self.upload_folder, 'thumbnails')
             try:
-                thumbnails_dir = os.path.join(self.upload_folder, 'thumbnails')
                 os.makedirs(thumbnails_dir, exist_ok=True)
                 thumbnail_filename = f"book_{book_id}_cover.jpg"
                 thumbnail_path = os.path.join(thumbnails_dir, thumbnail_filename)
@@ -149,6 +150,68 @@ class BookProcessor:
                 print(f"Warning: Could not generate thumbnail: {e}")
                 thumbnail_path = None
 
+            # Pull TOC from PDF outline (PyMuPDF). Falls back to detected
+            # headings later if absent. Stored as JSON in books.toc.
+            try:
+                import fitz
+                with fitz.open(pdf_path) as doc:
+                    raw_toc = doc.get_toc(simple=True) or []
+                toc = [
+                    {'level': lvl, 'title': (title or '').strip(), 'page': page}
+                    for lvl, title, page in raw_toc
+                    if title and 1 <= page
+                ]
+                if toc:
+                    cur.execute(
+                        "UPDATE books SET toc = %s WHERE id = %s",
+                        (json.dumps(toc), book_id)
+                    )
+                    conn.commit()
+            except Exception as e:
+                print(f"Warning: TOC extraction failed: {e}")
+
+            # Open Library / Google Books enrichment — clean title, real cover,
+            # author, ISBN, summary, subjects. Best-effort; never blocks upload.
+            try:
+                cur.execute("SELECT title, author, filename FROM books WHERE id=%s", (book_id,))
+                row = cur.fetchone()
+                if row:
+                    raw_title, raw_author, raw_filename = row
+                    from metadata_enricher import enrich_book, download_cover
+                    hint = raw_title or raw_filename or ''
+                    meta = enrich_book(hint, raw_author or None)
+                    if meta:
+                        fields = meta.as_db_dict()
+                        cur.execute("""
+                            UPDATE books SET
+                                title          = COALESCE(NULLIF(%s,''), title),
+                                author         = COALESCE(NULLIF(%s,''), author),
+                                subtitle       = %s,
+                                isbn           = %s,
+                                published_year = %s,
+                                summary        = %s,
+                                subjects       = %s,
+                                open_library_id= %s,
+                                metadata_source= %s,
+                                metadata_fetched_at = NOW()
+                            WHERE id = %s
+                        """, (
+                            fields['title'], fields['author'], fields['subtitle'],
+                            fields['isbn'], fields['published_year'], fields['summary'],
+                            fields['subjects'], fields['open_library_id'], fields['metadata_source'],
+                            book_id,
+                        ))
+                        conn.commit()
+
+                        # Replace the PDF-page thumbnail with the real cover
+                        # if we got one. Saved over the same path so the
+                        # /api/books/<id>/thumbnail URL stays stable.
+                        if meta.cover_url and thumbnail_path:
+                            if download_cover(meta.cover_url, thumbnail_path):
+                                print(f"Cover replaced from {meta.source}: {meta.cover_url}")
+            except Exception as e:
+                print(f"Warning: metadata enrichment failed: {e}")
+
             pages, is_scanned = processor.extract_text()
 
             if not pages:
@@ -159,14 +222,30 @@ class BookProcessor:
                 )
                 return
 
-            # Update book with page count and scanned flag
-            cur.execute("""
-                UPDATE books
-                SET total_pages = %s, is_scanned = %s, upload_status = 'ready'
-                WHERE id = %s
-            """, (len(pages), is_scanned, book_id))
+            # Detect book language from first ~5 pages or first 5000 chars.
+            # Pages with < 200 chars are skipped (too short for reliable detection).
+            detected_language = None
+            try:
+                sample_parts = []
+                sample_chars = 0
+                for pg in pages[:5]:
+                    pg_text = pg.get('text_content', '')
+                    if len(pg_text.strip()) >= 200:
+                        sample_parts.append(pg_text)
+                        sample_chars += len(pg_text)
+                        if sample_chars >= 5000:
+                            break
+                sample_text = ' '.join(sample_parts)[:5000]
+                lang_result = detect_language(sample_text)
+                if lang_result:
+                    detected_language, _conf = lang_result
+            except Exception as lang_err:
+                print(f"Warning: language detection failed for book {book_id}: {lang_err}")
+                detected_language = None
 
-            # Insert pages
+            # Insert pages first, then mark book ready in the same transaction.
+            # This avoids a window where upload_status='ready' is committed but
+            # book_pages rows are not yet present (would 404 the reader).
             for page in pages:
                 # Build TTS content by joining per-sentence tts_text.
                 # Falls back to text_content if sentences lack tts_text (old format).
@@ -196,6 +275,14 @@ class BookProcessor:
                     json.dumps(page['sentences']),
                     page['word_count']
                 ))
+
+            # Now that all pages are staged, mark the book ready atomically.
+            cur.execute("""
+                UPDATE books
+                SET total_pages = %s, is_scanned = %s, upload_status = 'ready',
+                    detected_language = %s
+                WHERE id = %s
+            """, (len(pages), is_scanned, detected_language, book_id))
 
             conn.commit()
             print(f"Book {book_id} processed: {len(pages)} pages, scanned={is_scanned}")
@@ -240,6 +327,14 @@ class BookProcessor:
 
     def _generate_audio_for_page(self, book_id, page_number, voice_id=None):
         """Generate audio for a single page with optional voice selection."""
+        # Defence-in-depth: workers may pull voice_id from the queue; reject
+        # anything that doesn't match the strict voice-ID pattern before it
+        # flows into filename construction below.
+        from tts_generator import is_valid_voice_id
+        if not is_valid_voice_id(voice_id):
+            print(f"Rejecting invalid voice_id for book {book_id} page {page_number}")
+            return
+
         conn = None
         cur = None
 

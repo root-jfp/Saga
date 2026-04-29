@@ -1,4 +1,4 @@
-// Shared utilities for Book Reader microservice
+// Shared utilities for Saga microservice
 
 // API base URL (same origin)
 const API_BASE = '/api';

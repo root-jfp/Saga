@@ -7,9 +7,15 @@ TTS Audio Generation with multiple backends:
 
 import subprocess
 import os
+import re
 import wave
 import asyncio
+import time
+import threading
+import logging
 from pathlib import Path
+
+logger = logging.getLogger('book-reader')
 
 # Try to import Edge TTS (best quality)
 try:
@@ -61,7 +67,288 @@ EDGE_VOICES = {
     'pt-PT-DuarteNeural': {'name': 'Duarte (PT Male)', 'gender': 'Male', 'locale': 'pt-PT'},
     'pt-BR-FranciscaNeural': {'name': 'Francisca (BR Female)', 'gender': 'Female', 'locale': 'pt-BR'},
     'pt-BR-AntonioNeural': {'name': 'Antonio (BR Male)', 'gender': 'Male', 'locale': 'pt-BR'},
+    # Spanish
+    'es-ES-ElviraNeural': {'name': 'Elvira (ES Female)', 'gender': 'Female', 'locale': 'es-ES'},
+    'es-ES-AlvaroNeural': {'name': 'Alvaro (ES Male)', 'gender': 'Male', 'locale': 'es-ES'},
+    'es-MX-DaliaNeural': {'name': 'Dalia (MX Female)', 'gender': 'Female', 'locale': 'es-MX'},
+    'es-MX-JorgeNeural': {'name': 'Jorge (MX Male)', 'gender': 'Male', 'locale': 'es-MX'},
+    # French
+    'fr-FR-DeniseNeural': {'name': 'Denise (FR Female)', 'gender': 'Female', 'locale': 'fr-FR'},
+    'fr-FR-HenriNeural': {'name': 'Henri (FR Male)', 'gender': 'Male', 'locale': 'fr-FR'},
+    'fr-CA-SylvieNeural': {'name': 'Sylvie (CA Female)', 'gender': 'Female', 'locale': 'fr-CA'},
+    # German
+    'de-DE-KatjaNeural': {'name': 'Katja (DE Female)', 'gender': 'Female', 'locale': 'de-DE'},
+    'de-DE-ConradNeural': {'name': 'Conrad (DE Male)', 'gender': 'Male', 'locale': 'de-DE'},
+    # Italian
+    'it-IT-ElsaNeural': {'name': 'Elsa (IT Female)', 'gender': 'Female', 'locale': 'it-IT'},
+    'it-IT-DiegoNeural': {'name': 'Diego (IT Male)', 'gender': 'Male', 'locale': 'it-IT'},
+    # Dutch
+    'nl-NL-ColetteNeural': {'name': 'Colette (NL Female)', 'gender': 'Female', 'locale': 'nl-NL'},
+    'nl-NL-MaartenNeural': {'name': 'Maarten (NL Male)', 'gender': 'Male', 'locale': 'nl-NL'},
+    # Polish
+    'pl-PL-AgnieszkaNeural': {'name': 'Agnieszka (PL Female)', 'gender': 'Female', 'locale': 'pl-PL'},
+    'pl-PL-MarekNeural': {'name': 'Marek (PL Male)', 'gender': 'Male', 'locale': 'pl-PL'},
+    # Russian
+    'ru-RU-SvetlanaNeural': {'name': 'Svetlana (RU Female)', 'gender': 'Female', 'locale': 'ru-RU'},
+    'ru-RU-DmitryNeural': {'name': 'Dmitry (RU Male)', 'gender': 'Male', 'locale': 'ru-RU'},
+    # Chinese Mandarin
+    'zh-CN-XiaoxiaoNeural': {'name': 'Xiaoxiao (CN Female)', 'gender': 'Female', 'locale': 'zh-CN'},
+    'zh-CN-YunxiNeural': {'name': 'Yunxi (CN Male)', 'gender': 'Male', 'locale': 'zh-CN'},
+    'zh-TW-HsiaoChenNeural': {'name': 'HsiaoChen (TW Female)', 'gender': 'Female', 'locale': 'zh-TW'},
+    # Japanese
+    'ja-JP-NanamiNeural': {'name': 'Nanami (JP Female)', 'gender': 'Female', 'locale': 'ja-JP'},
+    'ja-JP-KeitaNeural': {'name': 'Keita (JP Male)', 'gender': 'Male', 'locale': 'ja-JP'},
+    # Korean
+    'ko-KR-SunHiNeural': {'name': 'SunHi (KR Female)', 'gender': 'Female', 'locale': 'ko-KR'},
+    'ko-KR-InJoonNeural': {'name': 'InJoon (KR Male)', 'gender': 'Male', 'locale': 'ko-KR'},
+    # Arabic
+    'ar-SA-ZariyahNeural': {'name': 'Zariyah (SA Female)', 'gender': 'Female', 'locale': 'ar-SA'},
+    'ar-SA-HamedNeural': {'name': 'Hamed (SA Male)', 'gender': 'Male', 'locale': 'ar-SA'},
+    # Hindi
+    'hi-IN-SwaraNeural': {'name': 'Swara (IN Female)', 'gender': 'Female', 'locale': 'hi-IN'},
+    'hi-IN-MadhurNeural': {'name': 'Madhur (IN Male)', 'gender': 'Male', 'locale': 'hi-IN'},
+    # Turkish
+    'tr-TR-EmelNeural': {'name': 'Emel (TR Female)', 'gender': 'Female', 'locale': 'tr-TR'},
+    'tr-TR-AhmetNeural': {'name': 'Ahmet (TR Male)', 'gender': 'Male', 'locale': 'tr-TR'},
+    # Swedish
+    'sv-SE-SofieNeural': {'name': 'Sofie (SE Female)', 'gender': 'Female', 'locale': 'sv-SE'},
+    'sv-SE-MattiasNeural': {'name': 'Mattias (SE Male)', 'gender': 'Male', 'locale': 'sv-SE'},
+    # Norwegian
+    'nb-NO-PernilleNeural': {'name': 'Pernille (NO Female)', 'gender': 'Female', 'locale': 'nb-NO'},
+    'nb-NO-FinnNeural': {'name': 'Finn (NO Male)', 'gender': 'Male', 'locale': 'nb-NO'},
+    # Danish
+    'da-DK-ChristelNeural': {'name': 'Christel (DK Female)', 'gender': 'Female', 'locale': 'da-DK'},
+    'da-DK-JeppeNeural': {'name': 'Jeppe (DK Male)', 'gender': 'Male', 'locale': 'da-DK'},
+    # Finnish
+    'fi-FI-SelmaNeural': {'name': 'Selma (FI Female)', 'gender': 'Female', 'locale': 'fi-FI'},
+    'fi-FI-HarriNeural': {'name': 'Harri (FI Male)', 'gender': 'Male', 'locale': 'fi-FI'},
 }
+
+# ---------------------------------------------------------------------------
+# Module-level default voice constant
+# ---------------------------------------------------------------------------
+DEFAULT_VOICE = 'en-GB-SoniaNeural'
+
+# ---------------------------------------------------------------------------
+# Curated featured voices — quality defaults per locale (1-3 per locale)
+# ---------------------------------------------------------------------------
+FEATURED_VOICES: dict = {
+    'en-GB': ['en-GB-SoniaNeural', 'en-GB-RyanNeural', 'en-GB-LibbyNeural'],
+    'en-US': ['en-US-JennyNeural', 'en-US-AriaNeural', 'en-US-GuyNeural'],
+    'en-AU': ['en-AU-NatashaNeural', 'en-AU-WilliamNeural'],
+    'pt-BR': ['pt-BR-FranciscaNeural', 'pt-BR-AntonioNeural'],
+    'pt-PT': ['pt-PT-RaquelNeural', 'pt-PT-DuarteNeural'],
+    'es-ES': ['es-ES-ElviraNeural', 'es-ES-AlvaroNeural'],
+    'es-MX': ['es-MX-DaliaNeural', 'es-MX-JorgeNeural'],
+    'fr-FR': ['fr-FR-DeniseNeural', 'fr-FR-HenriNeural'],
+    'fr-CA': ['fr-CA-SylvieNeural'],
+    'de-DE': ['de-DE-KatjaNeural', 'de-DE-ConradNeural'],
+    'it-IT': ['it-IT-ElsaNeural', 'it-IT-DiegoNeural'],
+    'nl-NL': ['nl-NL-ColetteNeural', 'nl-NL-MaartenNeural'],
+    'pl-PL': ['pl-PL-AgnieszkaNeural', 'pl-PL-MarekNeural'],
+    'ru-RU': ['ru-RU-SvetlanaNeural', 'ru-RU-DmitryNeural'],
+    'zh-CN': ['zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural'],
+    'zh-TW': ['zh-TW-HsiaoChenNeural'],
+    'ja-JP': ['ja-JP-NanamiNeural', 'ja-JP-KeitaNeural'],
+    'ko-KR': ['ko-KR-SunHiNeural', 'ko-KR-InJoonNeural'],
+    'ar-SA': ['ar-SA-ZariyahNeural', 'ar-SA-HamedNeural'],
+    'hi-IN': ['hi-IN-SwaraNeural', 'hi-IN-MadhurNeural'],
+    'tr-TR': ['tr-TR-EmelNeural', 'tr-TR-AhmetNeural'],
+    'sv-SE': ['sv-SE-SofieNeural', 'sv-SE-MattiasNeural'],
+    'nb-NO': ['nb-NO-PernilleNeural', 'nb-NO-FinnNeural'],
+    'da-DK': ['da-DK-ChristelNeural', 'da-DK-JeppeNeural'],
+    'fi-FI': ['fi-FI-SelmaNeural', 'fi-FI-HarriNeural'],
+}
+
+# Language code → preferred locale when multiple locales exist for the same language.
+# e.g. 'pt' → prefer 'pt-BR' over 'pt-PT'.
+FEATURED_VOICES_PREFERRED_REGION: dict = {
+    'pt': 'pt-BR',
+    'en': 'en-GB',
+    'es': 'es-ES',
+    'fr': 'fr-FR',
+    'zh': 'zh-CN',
+    'ar': 'ar-SA',
+}
+
+# ---------------------------------------------------------------------------
+# Voice cache — keyed by ShortName / voice id
+# 24-hour TTL; populated lazily or via refresh_voice_cache().
+# ---------------------------------------------------------------------------
+_EDGE_VOICE_CACHE: dict = {}
+_CACHE_LOADED_AT: float = 0.0
+_CACHE_TTL_SECONDS: float = 24 * 3600
+_CACHE_LOCK = threading.Lock()
+
+# Voice-ID format: <lang>-<region>-<name>Neural — strict charset, ≤64 chars.
+# Used to allowlist voice IDs that flow into filenames (defence in depth).
+_VOICE_ID_PATTERN = re.compile(r'^[A-Za-z]{2,3}-[A-Za-z]{2,4}-[A-Za-z0-9]{1,40}$')
+
+
+def is_valid_voice_id(voice_id) -> bool:
+    """Return True if *voice_id* is a known cached voice or matches the strict pattern.
+
+    Used to validate voice IDs before they're used in filename construction or
+    passed downstream. None / empty values are treated as valid (no voice
+    selection — caller will use DEFAULT_VOICE).
+    """
+    if not voice_id:
+        return True
+    if not isinstance(voice_id, str):
+        return False
+    if voice_id in _EDGE_VOICE_CACHE:
+        return True
+    return bool(_VOICE_ID_PATTERN.match(voice_id))
+
+
+def _build_cache_from_hardcoded() -> dict:
+    """Return a cache dict built entirely from the hardcoded EDGE_VOICES catalogue."""
+    result = {}
+    for voice_id, info in EDGE_VOICES.items():
+        result[voice_id] = {
+            'id': voice_id,
+            'name': info['name'],
+            'gender': info['gender'],
+            'locale': info['locale'],
+            'backend': 'edge',
+            'quality': 'neural',
+        }
+    return result
+
+
+def _build_cache_from_api_list(api_voices: list) -> dict:
+    """Convert the raw list from edge_tts.list_voices() into our cache dict."""
+    result = {}
+    for v in api_voices:
+        short_name = v.get('ShortName', '')
+        if not short_name:
+            continue
+        result[short_name] = {
+            'id': short_name,
+            'name': v.get('FriendlyName', short_name),
+            'gender': v.get('Gender', 'Unknown'),
+            'locale': v.get('Locale', ''),
+            'backend': 'edge',
+            'quality': 'neural',
+        }
+    return result
+
+
+def refresh_voice_cache() -> dict:
+    """
+    Fetch the full Edge TTS voice list and update _EDGE_VOICE_CACHE.
+
+    Falls back to the hardcoded EDGE_VOICES catalogue if the network call fails.
+    Returns the new cache dict.
+    """
+    global _EDGE_VOICE_CACHE, _CACHE_LOADED_AT
+
+    if not EDGE_TTS_AVAILABLE:
+        _EDGE_VOICE_CACHE = _build_cache_from_hardcoded()
+        _CACHE_LOADED_AT = time.monotonic()
+        return dict(_EDGE_VOICE_CACHE)
+
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            api_voices = loop.run_until_complete(edge_tts.list_voices())
+        finally:
+            loop.close()
+
+        new_cache = _build_cache_from_api_list(api_voices)
+        if new_cache:
+            _EDGE_VOICE_CACHE = new_cache
+            _CACHE_LOADED_AT = time.monotonic()
+            return dict(_EDGE_VOICE_CACHE)
+    except Exception as exc:
+        logger.warning("Could not refresh Edge TTS voice cache: %s — using hardcoded fallback", exc)
+
+    # Fallback: hardcoded voices
+    _EDGE_VOICE_CACHE = _build_cache_from_hardcoded()
+    _CACHE_LOADED_AT = time.monotonic()
+    return dict(_EDGE_VOICE_CACHE)
+
+
+def _ensure_cache() -> None:
+    """Lazily populate _EDGE_VOICE_CACHE on first access or after TTL expiry.
+
+    Uses double-checked locking so concurrent workers don't trigger redundant
+    network calls when the cache is empty or expired.
+    """
+    if _EDGE_VOICE_CACHE and (time.monotonic() - _CACHE_LOADED_AT) <= _CACHE_TTL_SECONDS:
+        return
+    with _CACHE_LOCK:
+        if _EDGE_VOICE_CACHE and (time.monotonic() - _CACHE_LOADED_AT) <= _CACHE_TTL_SECONDS:
+            return
+        refresh_voice_cache()
+
+
+def get_voices_for_locale(locale: str) -> list:
+    """Return all cached voices whose locale exactly matches *locale*."""
+    _ensure_cache()
+    return [v for v in _EDGE_VOICE_CACHE.values() if v.get('locale') == locale]
+
+
+def get_all_voices_sync() -> list:
+    """Return all voices in the cache as a flat list."""
+    _ensure_cache()
+    return list(_EDGE_VOICE_CACHE.values())
+
+
+def pick_default_voice(lang_code: 'str | None') -> str:
+    """
+    Return the best default voice for *lang_code* (ISO 639-1).
+
+    Resolution order:
+    1. None or unknown → DEFAULT_VOICE.
+    2. Check FEATURED_VOICES_PREFERRED_REGION for a preferred locale, then
+       fall through to the first locale in FEATURED_VOICES that starts with
+       f"{lang_code}-".
+    3. Return the first voice in that locale's FEATURED_VOICES list.
+    4. If no featured match, scan the cache for any voice whose locale starts
+       with the lang code; prefer Female / Neural voices.
+    5. Final fallback → DEFAULT_VOICE.
+    """
+    if not lang_code:
+        return DEFAULT_VOICE
+
+    _ensure_cache()
+
+    # Step 2-3: look up via preferred region map, then FEATURED_VOICES
+    preferred_locale = FEATURED_VOICES_PREFERRED_REGION.get(lang_code)
+    if preferred_locale and preferred_locale in FEATURED_VOICES:
+        candidates = FEATURED_VOICES[preferred_locale]
+        if candidates:
+            return candidates[0]
+
+    # Scan FEATURED_VOICES for any locale starting with the lang code
+    for locale, candidates in FEATURED_VOICES.items():
+        if locale.startswith(f'{lang_code}-') and candidates:
+            return candidates[0]
+
+    # Step 4: scan cache directly
+    prefix = f'{lang_code}-'
+    female_match = None
+    any_match = None
+    for voice in _EDGE_VOICE_CACHE.values():
+        if voice.get('locale', '').startswith(prefix):
+            if any_match is None:
+                any_match = voice['id']
+            if voice.get('gender', '').lower() == 'female' and female_match is None:
+                female_match = voice['id']
+
+    if female_match:
+        return female_match
+    if any_match:
+        return any_match
+
+    return DEFAULT_VOICE
+
+
+# Populate the cache immediately from hardcoded voices so module-level
+# consumers can import _EDGE_VOICE_CACHE without needing a network call.
+_EDGE_VOICE_CACHE = _build_cache_from_hardcoded()
+_CACHE_LOADED_AT = time.monotonic()
 
 
 class TTSGenerator:

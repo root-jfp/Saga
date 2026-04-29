@@ -1,5 +1,5 @@
 """
-Background Audio Worker for Book Reader
+Background Audio Worker for Saga
 
 This script processes the audio generation queue for books.
 It should be run as a separate process alongside the main Flask app.
@@ -281,6 +281,14 @@ def process_job(job):
         page_number = job['page_number']
         voice_id = job['voice_id']
 
+        # Defence-in-depth: voice_id flows into filename construction below.
+        # Reject anything that doesn't match the strict pattern. If a malformed
+        # row is in the queue, drop it as a no-op.
+        from tts_generator import is_valid_voice_id
+        if not is_valid_voice_id(voice_id):
+            print(f"[WORKER] Rejecting invalid voice_id for book {book_id} page {page_number}")
+            return False
+
         print(f"[WORKER] Processing book {book_id} page {page_number} with voice {voice_id or 'default'}")
 
         # Get page text
@@ -300,19 +308,12 @@ def process_job(job):
             audio_filename = f"book_{book_id}_page_{page_number}.mp3"
         audio_path = os.path.join(AUDIO_FOLDER, audio_filename)
 
-        # Check if audio already exists with same settings
-        if os.path.exists(audio_path):
-            # Audio file exists, check if it's valid
-            if os.path.getsize(audio_path) > 0:
-                print(f"[WORKER] Audio already exists: {audio_path}")
-                # Still update database to mark as ready
-                update_job_completed(
-                    conn, job['id'], book_id, page_number,
-                    audio_path, 0, voice_id, []
-                )
-                return True
-
-        # Generate audio
+        # If a job is in the queue, the upstream code already concluded that
+        # this page needs (re)generation — never trust an on-disk file. The
+        # old "skip if file exists with size > 0" optimisation silently reused
+        # stale audio whose source text had since changed (e.g. after a
+        # re-extraction), which is exactly the bug we just hit. Always
+        # regenerate; that's why the job exists.
         success, result = generate_audio(text_content, audio_path, voice_id)
 
         if success:

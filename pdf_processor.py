@@ -9,7 +9,23 @@ PDF Processing Pipeline
 import re
 import os
 import json
+import unicodedata
 from collections import Counter
+
+# Arabic and Hebrew script ranges (base letters + Arabic presentation forms).
+# Presentation forms (FB50-FDFF, FE70-FEFF) are the pre-shaped glyphs PDFs
+# embed; NFKC normalises them back to base letters in 0600-06FF.
+_RTL_RANGE = re.compile(
+    '['
+    '֐-׿'   # Hebrew
+    '؀-ۿ'   # Arabic
+    'ݐ-ݿ'   # Arabic Supplement
+    'ࢠ-ࣿ'   # Arabic Extended-A
+    'יִ-ﭏ'   # Hebrew Presentation Forms
+    'ﭐ-﷿'   # Arabic Presentation Forms-A
+    'ﹰ-﻿'   # Arabic Presentation Forms-B
+    ']'
+)
 
 # ---------------------------------------------------------------------------
 # Optional dependencies
@@ -214,6 +230,7 @@ class PDFProcessor:
                     if ocr_text and len(ocr_text.strip()) > len(text.strip()):
                         text = ocr_text
                 text = self._clean_text(text)
+                text = '\n'.join(self._normalize_rtl_line(line) for line in text.split('\n'))
                 paragraphs = [{'type': 'paragraph', 'text': text}]
                 return self._build_page_result(page_number, paragraphs)
         except Exception as e:
@@ -333,10 +350,13 @@ class PDFProcessor:
                 for s in all_spans
             )
 
-            # Build block text with hyphenation handling
+            # Build block text with hyphenation handling. Apply RTL
+            # normalisation per-line so display order, sentence splitting,
+            # and TTS all see logical-order text.
             block_lines = []
             for line in lines:
                 line_text = ''.join(s.get("text", "") for s in line.get("spans", []))
+                line_text = self._normalize_rtl_line(line_text)
                 block_lines.append(line_text)
 
             joined_text = self._join_lines(block_lines)
@@ -440,6 +460,27 @@ class PDFProcessor:
             paragraphs.append({'type': block_type, 'text': text})
 
         return paragraphs
+
+    def _normalize_rtl_line(self, text):
+        """
+        Convert PDF-extracted RTL text into logical reading order.
+
+        PDF extractors return Arabic/Hebrew text in two problematic forms:
+          - Arabic Presentation Forms (FB50-FDFF, FE70-FEFF) — pre-shaped
+            glyphs that look right when rendered as a font but that TTS
+            engines cannot pronounce.
+          - Visual order — characters appear in left-to-right glyph
+            sequence, which for an RTL script is the *reverse* of the
+            actual reading order.
+
+        Fix: NFKC-normalise (presentation forms → base letters) and reverse
+        the line if it contains RTL script. Reversing the entire line is a
+        simplification that works for pure-RTL lines; mixed-script lines
+        would need full Unicode bidi (python-bidi) — out of scope here.
+        """
+        if not text or not _RTL_RANGE.search(text):
+            return text
+        return unicodedata.normalize('NFKC', text)[::-1]
 
     def _join_lines(self, lines):
         """
@@ -759,6 +800,7 @@ class PDFProcessor:
         for i, raw_text in enumerate(raw_pages):
             text = self._remove_repeating_lines(raw_text, header_footer_patterns)
             text = self._clean_text(text)
+            text = '\n'.join(self._normalize_rtl_line(line) for line in text.split('\n'))
             paragraphs = [{'type': 'paragraph', 'text': text}]
             self.pages.append(self._build_page_result(i + 1, paragraphs))
 

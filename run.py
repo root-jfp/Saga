@@ -1,5 +1,5 @@
 """
-Production runner for Book Reader Microservice.
+Production runner for Saga Microservice.
 
 Usage:
     python run.py                   # Waitress on port 5001
@@ -65,7 +65,7 @@ def start_audio_worker():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Book Reader microservice")
+    parser = argparse.ArgumentParser(description="Run Saga microservice")
     parser.add_argument('--port', type=int, default=5001)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--threads', type=int, default=8)
@@ -83,7 +83,7 @@ def main():
 
     try:
         from waitress import serve
-        print(f"Book Reader running at http://{args.host}:{args.port}")
+        print(f"Saga running at http://{args.host}:{args.port}")
         serve(app, host=args.host, port=args.port, threads=args.threads)
     except ImportError:
         print("Waitress not installed. Run: pip install waitress")

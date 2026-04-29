@@ -299,3 +299,175 @@ class TestEnqueuePageAudioPriority:
         assert received_priority == [200], (
             f"Expected priority 200, got {received_priority}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Language detection integration in _process_book
+# ---------------------------------------------------------------------------
+
+class TestProcessBookLanguageDetection:
+    """
+    _process_book must call detect_language and save detected_language
+    in the UPDATE books SET ... upload_status = 'ready' statement.
+    """
+
+    def _build_mock_page(self, text_content: str = 'Hello world.', sentences=None):
+        """Return a fake page dict similar to what PDFProcessor.extract_text() yields."""
+        if sentences is None:
+            sentences = [
+                {
+                    'text': text_content,
+                    'tts_text': text_content,
+                    'start': 0, 'end': len(text_content),
+                    'paragraph_index': 0,
+                    'is_paragraph_start': True,
+                    'is_heading': False,
+                }
+            ]
+        return {
+            'page_number': 1,
+            'text_content': text_content,
+            'sentences': sentences,
+            'word_count': len(text_content.split()),
+        }
+
+    def _run_process_book(
+        self,
+        pages: list,
+        detected_language_result,
+        is_scanned: bool = False,
+    ) -> list:
+        """
+        Run _process_book with mocked DB and PDFProcessor.
+
+        Returns the list of (sql, params) tuples passed to cur.execute().
+        """
+        p = BookProcessor.__new__(BookProcessor)
+        p.upload_folder = '/tmp/uploads'
+        p.audio_folder = '/tmp/audio'
+
+        mock_tts = mock.MagicMock()
+        p.tts = mock_tts
+
+        executed_calls = []
+
+        def capture_execute(sql, params=None):
+            executed_calls.append((sql, params))
+
+        mock_cur = mock.MagicMock()
+        mock_cur.execute.side_effect = capture_execute
+        mock_cur.fetchone.return_value = ('/tmp/fake.pdf',)
+
+        mock_conn = mock.MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+
+        mock_processor = mock.MagicMock()
+        mock_processor.extract_cover.return_value = False
+        mock_processor.extract_text.return_value = (pages, is_scanned)
+
+        with mock.patch('psycopg2.connect', return_value=mock_conn), \
+             mock.patch('os.path.exists', return_value=True), \
+             mock.patch('book_tasks.PDFProcessor', return_value=mock_processor), \
+             mock.patch(
+                 'book_tasks.detect_language',
+                 return_value=detected_language_result,
+             ):
+            p._process_book(book_id=1)
+
+        return executed_calls
+
+    def test_detected_language_saved_on_ready_update(self):
+        """
+        When language detection returns ('en', 0.95), the UPDATE that sets
+        upload_status='ready' must also set detected_language='en'.
+        """
+        pages = [self._build_mock_page('Hello world. ' * 20)]
+        calls = self._run_process_book(
+            pages=pages,
+            detected_language_result=('en', 0.95),
+        )
+
+        # Find the UPDATE books SET ... upload_status = 'ready' call
+        # The SQL contains "upload_status = 'ready'" and "detected_language"
+        ready_updates = [
+            (sql, params) for sql, params in calls
+            if sql and "upload_status" in sql and "detected_language" in sql
+        ]
+        assert ready_updates, (
+            "No UPDATE with detected_language column found. "
+            f"All calls: {[(s[:60] if s else None) for s, _ in calls]}"
+        )
+
+        # The params must include the detected language code
+        all_params = [p for _, p in ready_updates]
+        assert any('en' in (p or ()) for p in all_params), (
+            f"'en' not found in ready UPDATE params: {all_params}"
+        )
+
+    def test_detected_language_none_when_detection_fails(self):
+        """
+        When detect_language returns None, the UPDATE must set
+        detected_language=None (not crash).
+        """
+        pages = [self._build_mock_page('Hello world. ' * 20)]
+        calls = self._run_process_book(
+            pages=pages,
+            detected_language_result=None,
+        )
+
+        ready_updates = [
+            (sql, params) for sql, params in calls
+            if sql and "upload_status" in sql and "detected_language" in sql
+        ]
+        assert ready_updates, (
+            "No UPDATE with detected_language column found. "
+            f"All calls: {[(s[:60] if s else None) for s, _ in calls]}"
+        )
+
+        # None should appear in params (actual Python None, not the string)
+        _, params = ready_updates[0]
+        assert None in params, (
+            f"Expected None in params when detection returns None, got {params}"
+        )
+
+    def test_process_book_does_not_crash_when_detect_language_raises(self):
+        """
+        If detect_language raises an exception, _process_book must not propagate it.
+        The book should still be processed (upload_status set to 'ready').
+        """
+        pages = [self._build_mock_page('Hello world. ' * 20)]
+
+        p = BookProcessor.__new__(BookProcessor)
+        p.upload_folder = '/tmp/uploads'
+        p.audio_folder = '/tmp/audio'
+        p.tts = mock.MagicMock()
+
+        executed_calls = []
+
+        def capture_execute(sql, params=None):
+            executed_calls.append((sql, params))
+
+        mock_cur = mock.MagicMock()
+        mock_cur.execute.side_effect = capture_execute
+        mock_cur.fetchone.return_value = ('/tmp/fake.pdf',)
+        mock_conn = mock.MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+
+        mock_processor = mock.MagicMock()
+        mock_processor.extract_cover.return_value = False
+        mock_processor.extract_text.return_value = (pages, False)
+
+        with mock.patch('psycopg2.connect', return_value=mock_conn), \
+             mock.patch('os.path.exists', return_value=True), \
+             mock.patch('book_tasks.PDFProcessor', return_value=mock_processor), \
+             mock.patch('book_tasks.detect_language', side_effect=RuntimeError("boom")):
+            # Must not raise
+            p._process_book(book_id=1)
+
+        ready_updates = [
+            (sql, params) for sql, params in executed_calls
+            if sql and 'upload_status' in sql and 'detected_language' in sql
+        ]
+        assert ready_updates, (
+            "upload_status='ready' was not set — language detection error broke book processing"
+        )

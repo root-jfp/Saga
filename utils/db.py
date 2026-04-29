@@ -1,4 +1,4 @@
-"""Database utilities for the Book Reader microservice."""
+"""Database utilities for the Saga microservice."""
 
 import os
 import logging
@@ -71,6 +71,16 @@ def serialize_book(book):
     if book.get('created_at') and isinstance(book['created_at'], datetime):
         book['created_at'] = book['created_at'].isoformat()
     book['cover_image_path'] = f"/api/books/{book['id']}/thumbnail"
+
+    # Don't leak filesystem paths in API responses.
+    book.pop('storage_path', None)
+
+    # Inline import: tts_generator transitively imports edge_tts which itself
+    # touches network helpers — keep utils/db.py free of that dependency at
+    # import time.
+    from tts_generator import pick_default_voice
+    book['recommended_voice_id'] = pick_default_voice(book.get('detected_language'))
+
     return book
 
 

@@ -18,9 +18,8 @@ env/
 *.log
 server.log
 
-# Uploads (user data)
-uploads/audio/
-uploads/thumbnails/
+# Uploads (user data — books, generated audio, thumbnails)
+uploads/
 
 # Database
 *.db

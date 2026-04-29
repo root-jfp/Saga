@@ -1,5 +1,5 @@
 // ============================================================================
-// Book Reader - PDF.js Frontend Logic
+// Saga - PDF.js Frontend Logic
 // ============================================================================
 
 // Set PDF.js worker (with safety check in case CDN fails to load)
@@ -29,6 +29,23 @@ let audioTiming = [];  // Real timing data from TTS: [{text, offset, duration}, 
 // Voice state
 let availableVoices = [];
 let selectedVoice = null;
+
+// Categories state — populated by loadCategories / loadCategoryPresets.
+// `currentCategoryId` semantics:
+//   undefined → showing the category browser landing
+//   null      → "All books" virtual selection
+//   -1        → "Uncategorised" virtual selection
+//   <number>  → specific category id
+const categoriesState = {
+    list: [],
+    byId: {},
+    presets: [],
+    presetByKey: {},
+    uncategorisedCount: 0,
+    currentCategoryId: undefined,
+    editingId: null,
+    pendingVisual: { kind: 'preset', value: 'general' },  // form scratch state
+};
 
 
 // View mode: 'book' or 'text'
@@ -76,10 +93,12 @@ async function init() {
         // Track which user we loaded books for
         lastLoadedUserId = currentUser?.id || null;
 
-        // Load books and voices in parallel for faster loading
-        const [booksResult, voicesResult] = await Promise.all([
+        // Load books, categories, presets, and voices in parallel.
+        await Promise.all([
             loadBooks(),
-            loadVoices()
+            loadCategories(),
+            loadCategoryPresets(),
+            loadVoices(),
         ]);
 
         setupDropdowns();
@@ -88,7 +107,7 @@ async function init() {
         setViewMode(currentViewMode);  // Initialize view mode
         hideLoading();
     } catch (error) {
-        console.error('Book Reader init error:', error);
+        console.error('Saga init error:', error);
         hideLoading();
         showToast('Failed to load book data. Please refresh.', 'error');
     }
@@ -114,7 +133,10 @@ async function handleUserChanged(event) {
             await new Promise(resolve => setTimeout(resolve, 200));
         }
 
-        await loadBooks();
+        await Promise.all([loadBooks(), loadCategories()]);
+        // Reset to the category browser on user switch — a stale category id
+        // from the previous user would mismatch this user's data.
+        categoriesState.currentCategoryId = undefined;
         renderLibraryWithAnimation();
     }
 }
@@ -167,6 +189,33 @@ function setupEventListeners() {
     document.getElementById('uploadBookBtn')?.addEventListener('click', showUploadModal);
     document.getElementById('closeUploadModal')?.addEventListener('click', hideUploadModal);
     document.getElementById('uploadForm')?.addEventListener('submit', handleUpload);
+
+    // Manage users modal
+    document.getElementById('manageUsersBtn')?.addEventListener('click', showUsersModal);
+    document.getElementById('closeUsersModal')?.addEventListener('click', hideUsersModal);
+    document.getElementById('createUserForm')?.addEventListener('submit', handleCreateUser);
+
+    // Categories
+    document.getElementById('uploadBookBtnInside')?.addEventListener('click', showUploadModal);
+    document.getElementById('manageCategoriesBtn')?.addEventListener('click', showCategoriesModal);
+    document.getElementById('closeCategoriesModal')?.addEventListener('click', hideCategoriesModal);
+    document.getElementById('createCategoryForm')?.addEventListener('submit', handleSubmitCategoryForm);
+    document.getElementById('cancelCategoryEditBtn')?.addEventListener('click', () => {
+        _resetCategoryForm();
+        renderPresetGrid();
+        renderCategoryParentSelect();
+    });
+    document.querySelectorAll('.visual-tab').forEach(btn => {
+        btn.addEventListener('click', () => _switchVisualTab(btn.dataset.tab));
+    });
+    document.getElementById('backToCategories')?.addEventListener('click', () => {
+        categoriesState.currentCategoryId = undefined;
+        renderLibrary();
+    });
+    document.getElementById('closeAssignCategoryModal')?.addEventListener('click', hideAssignCategoryModal);
+
+    // Refresh audio
+    document.getElementById('regenerateAudioBtn')?.addEventListener('click', regenerateAudioForCurrentBook);
 
     // File drop zone
     const dropZone = document.getElementById('fileDropZone');
@@ -294,7 +343,8 @@ async function switchUser(userId) {
     }
 
     try {
-        await loadBooks();
+        await Promise.all([loadBooks(), loadCategories()]);
+        categoriesState.currentCategoryId = undefined;
         renderLibraryWithAnimation();
     } catch (error) {
         console.error('Error switching user:', error);
@@ -328,6 +378,16 @@ async function loadBooks() {
 }
 
 function renderLibrary() {
+    // Dispatcher: either show the category browser landing or the contents
+    // of the currently-selected category (incl. "All" and "Uncategorised").
+    if (categoriesState.currentCategoryId === undefined) {
+        showCategoryBrowser();
+        return;
+    }
+    showCategoryContents(categoriesState.currentCategoryId);
+}
+
+function _renderBooksGrid(filteredBooks) {
     const noBooks = document.getElementById('noBooks');
 
     if (!booksGrid) {
@@ -335,19 +395,23 @@ function renderLibrary() {
         return;
     }
 
-    // Always clear grid first to prevent stale content
     booksGrid.innerHTML = '';
 
-    if (books.length === 0) {
-        if (noBooks) noBooks.style.display = 'block';
+    if (!filteredBooks.length) {
+        if (noBooks) noBooks.classList.remove('hidden');
         return;
     }
+    if (noBooks) noBooks.classList.add('hidden');
 
-    if (noBooks) noBooks.style.display = 'none';
-
-    booksGrid.innerHTML = books.map(book => `
+    booksGrid.innerHTML = filteredBooks.map(book => {
+        const cat = book.category_id ? categoriesState.byId[book.category_id] : null;
+        const catBadge = cat
+            ? `<div class="book-category-badge">${escapeHtml((cat.emoji || '') + ' ' + cat.name)}</div>`
+            : '';
+        return `
         <div class="book-card" data-book-id="${book.id}">
             <div class="book-cover" onclick="openBook(${book.id})">
+                ${catBadge}
                 ${book.cover_image_path
                     ? `<img src="${API_BASE}/books/${book.id}/thumbnail" alt="${escapeHtml(book.title)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                        <div class="book-cover-placeholder" style="display:none;">PDF</div>`
@@ -371,9 +435,11 @@ function renderLibrary() {
                 </div>
                 ${getAudioProgressHtml(book)}
             </div>
+            <button class="book-assign-btn" onclick="event.stopPropagation(); showAssignCategoryModal(${book.id})" title="Move to category">Move</button>
             <button class="book-delete-btn" onclick="event.stopPropagation(); deleteBook(${book.id})" title="Delete">X</button>
         </div>
-    `).join('');
+        `;
+    }).join('');
 
     // Start polling for audio progress on books that are generating
     pollAudioProgress();
@@ -519,6 +585,13 @@ async function openBook(bookId) {
         playbackSpeed = currentBook.playback_speed || 1.0;
         updateSpeedDisplay();
 
+        // IMPORTANT: settle the voice picker BEFORE loading book content.
+        // loadBook → renderPage → loadPageAudio uses `selectedVoice` to build
+        // the audio URL. If that runs before loadVoices, the previous book's
+        // voice leaks into the new book's audio request — TTS then synthesises
+        // (wrong voice on new script) and we get ~5s of silence/garbage.
+        await loadVoices();
+
         // Load book content
         await loadBook(bookId);
         await loadBookmarks();
@@ -638,56 +711,203 @@ async function deleteBook(bookId) {
 }
 
 // ============ VOICES ============
-async function loadVoices() {
-    try {
-        const response = await fetch(`${API_BASE}/tts/voices`);
-        availableVoices = await response.json();
 
-        const voiceMenu = document.getElementById('voiceMenu');
-        if (!voiceMenu) {
-            console.warn('voiceMenu element not found');
-            return;
-        }
-        voiceMenu.innerHTML = '';
+/**
+ * Is voice `voiceId` plausible for `book`?
+ * A voice's locale (e.g. 'ar-SA') must match the book's detected_language
+ * (e.g. 'ar'). If we can't decide (missing data or unknown voice id), assume
+ * yes — the caller will fall back if it's actually wrong.
+ *
+ * This guard prevents a stale per-book or global voice from speaking the
+ * wrong script: e.g. the Korean voice silently producing 0s of audio when
+ * pointed at Arabic text.
+ */
+function _isVoiceCompatibleWithBook(voiceId, book) {
+    if (!voiceId || !book || !book.detected_language) return true;
+    const voice = availableVoices && availableVoices.find(v => v.id === voiceId);
+    if (!voice || !voice.locale) return true;
+    const voiceLang = voice.locale.split('-')[0].toLowerCase();
+    return voiceLang === String(book.detected_language).toLowerCase();
+}
+
+/**
+ * Return the best voice id to use for the current book.
+ * Priority:
+ *   1. per-book override (only if compatible with the book's language)
+ *   2. recommended voice for the book's detected language
+ *   3. global last-selected voice (only if compatible)
+ *   4. null (caller falls back to first available voice)
+ *
+ * Both the per-book and global entries are language-validated so a stale
+ * pick from a previous book can't override a language-appropriate
+ * recommendation.
+ */
+function _getEffectiveVoice() {
+    if (currentBook) {
+        const perBook = localStorage.getItem(`voice_book_${currentBook.id}`);
+        if (perBook && _isVoiceCompatibleWithBook(perBook, currentBook)) return perBook;
+        if (currentBook.recommended_voice_id) return currentBook.recommended_voice_id;
+    }
+    const global = localStorage.getItem('selectedVoice');
+    if (global && _isVoiceCompatibleWithBook(global, currentBook)) return global;
+    return null;
+}
+
+/**
+ * Build a voice item DOM element and attach a click handler.
+ */
+function _buildVoiceItem(voice, effectiveVoice) {
+    const isFemale = voice.gender === 'Female';
+    const genderClass = isFemale ? 'female' : 'male';
+    const genderIcon = isFemale ? 'F' : 'M';
+    const isSelected = effectiveVoice === voice.id;
+
+    const item = document.createElement('div');
+    item.className = `dropdown-item voice-item${isSelected ? ' selected' : ''}`;
+    item.dataset.id = voice.id;
+    item.dataset.name = (voice.name || '').toLowerCase();
+    item.dataset.locale = (voice.locale || '').toLowerCase();
+    item.innerHTML = `
+        <div class="item-avatar ${genderClass}">${genderIcon}</div>
+        <div class="item-info">
+            <div class="item-name">${escapeHtml(voice.name)}</div>
+            <div class="item-locale">${escapeHtml(voice.locale)} &middot; ${escapeHtml(voice.quality || 'neural')}</div>
+        </div>
+    `;
+    item.addEventListener('click', () => selectVoice(voice));
+    return item;
+}
+
+/**
+ * Load and render the voice picker with:
+ * - Search box at the top
+ * - "Recommended for this book" pinned section
+ * - Grouped collapsible list by locale
+ */
+async function loadVoices() {
+    const voiceMenu = document.getElementById('voiceMenu');
+    if (!voiceMenu) return;
+
+    try {
+        // Fetch grouped voice list
+        const response = await fetch(`${API_BASE}/tts/voices?grouped=1`);
+        const groupedData = await response.json();
+
+        // Build flat list for searching and for initialising selectedVoice
+        availableVoices = [];
+        groupedData.forEach(group => {
+            (group.voices || []).forEach(v => availableVoices.push(v));
+        });
 
         if (availableVoices.length === 0) {
             voiceMenu.innerHTML = '<div class="dropdown-item">No voices available</div>';
             return;
         }
 
-        // Load saved voice preference
-        const savedVoice = localStorage.getItem('selectedVoice');
+        const effectiveVoice = _getEffectiveVoice() || availableVoices[0].id;
 
-        availableVoices.forEach(voice => {
-            const isFemale = voice.gender === 'Female';
-            const genderClass = isFemale ? 'female' : 'male';
-            const genderIcon = isFemale ? 'F' : 'M';
-            const isSelected = savedVoice === voice.id || (!savedVoice && availableVoices[0].id === voice.id);
-
-            const item = document.createElement('div');
-            item.className = `dropdown-item voice-item${isSelected ? ' selected' : ''}`;
-            item.dataset.id = voice.id;
-            item.dataset.gender = voice.gender;
-            item.innerHTML = `
-                <div class="item-avatar ${genderClass}">${genderIcon}</div>
-                <div class="item-info">
-                    <div class="item-name">${voice.name}</div>
-                    <div class="item-locale">${voice.locale} - ${voice.quality}</div>
-                </div>
-            `;
-            item.addEventListener('click', () => selectVoice(voice));
-            voiceMenu.appendChild(item);
-
-            if (isSelected) {
-                selectedVoice = voice.id;
-                updateVoiceDisplay(voice);
-            }
-        });
-
-        if (!selectedVoice && availableVoices.length > 0) {
+        // Apply effective voice
+        const matchedVoice = availableVoices.find(v => v.id === effectiveVoice);
+        if (matchedVoice) {
+            selectedVoice = matchedVoice.id;
+            updateVoiceDisplay(matchedVoice);
+        } else {
             selectedVoice = availableVoices[0].id;
             updateVoiceDisplay(availableVoices[0]);
         }
+
+        voiceMenu.innerHTML = '';
+
+        // ── Search box ──────────────────────────────────────────────────────
+        const searchWrapper = document.createElement('div');
+        searchWrapper.className = 'voice-search-wrapper';
+        searchWrapper.innerHTML = `
+            <input type="text" class="voice-search-input" placeholder="Search voices..." autocomplete="off">
+        `;
+        voiceMenu.appendChild(searchWrapper);
+
+        const searchInput = searchWrapper.querySelector('.voice-search-input');
+        searchInput.addEventListener('input', () => {
+            const query = searchInput.value.toLowerCase().trim();
+            voiceMenu.querySelectorAll('.voice-item').forEach(el => {
+                const name = el.dataset.name || '';
+                const locale = el.dataset.locale || '';
+                el.style.display = (!query || name.includes(query) || locale.includes(query)) ? '' : 'none';
+            });
+            // Hide section headers with no visible children
+            voiceMenu.querySelectorAll('.voice-group-header').forEach(header => {
+                const section = header.nextElementSibling;
+                if (!section) return;
+                const visibleItems = section.querySelectorAll('.voice-item:not([style*="display: none"])');
+                header.style.display = visibleItems.length === 0 ? 'none' : '';
+            });
+        });
+        // Prevent dropdown from closing when typing in search
+        searchInput.addEventListener('click', e => e.stopPropagation());
+
+        // ── Recommended section ──────────────────────────────────────────────
+        const recommendedId = currentBook && currentBook.recommended_voice_id
+            ? currentBook.recommended_voice_id
+            : null;
+
+        if (recommendedId) {
+            // Show the recommended voice plus up to 2 siblings from the same locale
+            const recVoice = availableVoices.find(v => v.id === recommendedId);
+            if (recVoice) {
+                const siblingsLocale = recVoice.locale;
+                const siblings = availableVoices
+                    .filter(v => v.locale === siblingsLocale && v.id !== recommendedId)
+                    .slice(0, 2);
+                const recGroup = [recVoice, ...siblings];
+
+                const recHeader = document.createElement('div');
+                recHeader.className = 'voice-group-header voice-group-recommended';
+                recHeader.textContent = 'Recommended for this book';
+                voiceMenu.appendChild(recHeader);
+
+                const recSection = document.createElement('div');
+                recSection.className = 'voice-group-section';
+                recGroup.forEach(voice => {
+                    recSection.appendChild(_buildVoiceItem(voice, effectiveVoice));
+                });
+                voiceMenu.appendChild(recSection);
+
+                const divider = document.createElement('div');
+                divider.className = 'voice-group-divider';
+                voiceMenu.appendChild(divider);
+            }
+        }
+
+        // ── Grouped locale sections ──────────────────────────────────────────
+        // Try to use Intl.DisplayNames for human-readable language names
+        let langNames = null;
+        try {
+            langNames = new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' });
+        } catch (_) { /* Safari < 14 doesn't support Intl.DisplayNames */ }
+
+        groupedData.forEach(group => {
+            if (!group.voices || group.voices.length === 0) return;
+
+            const locale = group.locale || 'unknown';
+            // Extract language code (e.g. 'en' from 'en-GB')
+            const langCode = locale.split('-')[0];
+            let langLabel = locale;
+            try {
+                if (langNames) langLabel = langNames.of(langCode) || locale;
+            } catch (_) { langLabel = locale; }
+
+            const header = document.createElement('div');
+            header.className = 'voice-group-header';
+            header.textContent = `${langLabel} (${locale})`;
+            voiceMenu.appendChild(header);
+
+            const section = document.createElement('div');
+            section.className = 'voice-group-section';
+            group.voices.forEach(voice => {
+                section.appendChild(_buildVoiceItem(voice, effectiveVoice));
+            });
+            voiceMenu.appendChild(section);
+        });
 
     } catch (error) {
         console.error('Failed to load voices:', error);
@@ -710,7 +930,13 @@ function updateVoiceDisplay(voice) {
 function selectVoice(voice) {
     const previousVoice = selectedVoice;
     selectedVoice = voice.id;
-    localStorage.setItem('selectedVoice', voice.id);
+    // Per-book only — never write to the global slot. Writing globally
+    // poisons every other book's auto-selection: opening a different
+    // language book would inherit this voice and TTS would emit near
+    // silence on a mismatched script.
+    if (currentBook) {
+        localStorage.setItem(`voice_book_${currentBook.id}`, voice.id);
+    }
     updateVoiceDisplay(voice);
 
     // Update selected state in menu
@@ -863,8 +1089,27 @@ function setViewMode(mode) {
 }
 
 // Render sentences as flowing text in Book View (looks like a book page)
+// Languages whose script is read right-to-left.
+const RTL_LANGS = new Set(['ar', 'he', 'fa', 'ur', 'yi', 'ps', 'sd']);
+
+function _isRtlBook() {
+    return !!(currentBook && currentBook.detected_language &&
+              RTL_LANGS.has(currentBook.detected_language));
+}
+
 function renderBookSentences() {
     if (!bookPageContent) return;
+
+    // Apply RTL direction at the page-content level when the book's detected
+    // language is right-to-left. Without this the browser lays Arabic out
+    // visually LTR which makes paragraphs unreadable.
+    if (_isRtlBook()) {
+        bookPageContent.setAttribute('dir', 'rtl');
+        bookPageContent.lang = currentBook.detected_language;
+    } else {
+        bookPageContent.removeAttribute('dir');
+        bookPageContent.removeAttribute('lang');
+    }
 
     if (pageSentences.length === 0) {
         bookPageContent.innerHTML = '<p style="color: #888; font-style: italic;">No text available for this page.</p>';
@@ -1606,6 +1851,148 @@ function hideUploadModal() {
     if (modal) modal.classList.remove('visible');
 }
 
+// ── Users management modal ───────────────────────────────────────────────────
+
+function showUsersModal() {
+    const modal = document.getElementById('usersModal');
+    if (!modal) return;
+    renderUsersList();
+    const form = document.getElementById('createUserForm');
+    if (form) form.reset();
+    const avatar = document.getElementById('newUserAvatar');
+    if (avatar) avatar.value = '📚';
+    modal.classList.add('visible');
+}
+
+function hideUsersModal() {
+    const modal = document.getElementById('usersModal');
+    if (modal) modal.classList.remove('visible');
+}
+
+function renderUsersList() {
+    const list = document.getElementById('usersList');
+    const empty = document.getElementById('noUsersMessage');
+    if (!list) return;
+
+    list.innerHTML = '';
+
+    if (!allUsers.length) {
+        if (empty) empty.classList.remove('hidden');
+        return;
+    }
+    if (empty) empty.classList.add('hidden');
+
+    const isOnlyUser = allUsers.length === 1;
+
+    allUsers.forEach(user => {
+        const li = document.createElement('li');
+        li.className = 'user-row';
+        li.dataset.userId = user.id;
+
+        const avatar = document.createElement('span');
+        avatar.className = 'user-row-avatar';
+        avatar.textContent = user.avatar || 'U';
+
+        const name = document.createElement('span');
+        name.className = 'user-row-name';
+        name.textContent = user.name;
+
+        li.appendChild(avatar);
+        li.appendChild(name);
+
+        if (currentUser && user.id === currentUser.id) {
+            const badge = document.createElement('span');
+            badge.className = 'user-row-active';
+            badge.textContent = 'Active';
+            li.appendChild(badge);
+        }
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'user-row-delete';
+        del.textContent = 'Delete';
+        del.disabled = isOnlyUser;
+        del.title = isOnlyUser ? 'Cannot delete the only user' : `Delete ${user.name}`;
+        del.addEventListener('click', () => handleDeleteUser(user));
+        li.appendChild(del);
+
+        list.appendChild(li);
+    });
+}
+
+async function handleCreateUser(event) {
+    event.preventDefault();
+    const nameInput = document.getElementById('newUserName');
+    const avatarInput = document.getElementById('newUserAvatar');
+    const submitBtn = document.getElementById('createUserSubmitBtn');
+
+    const name = (nameInput?.value || '').trim();
+    const avatar = (avatarInput?.value || '').trim() || '📚';
+
+    if (!name) {
+        showToast('Name is required', 'error');
+        return;
+    }
+
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+        const response = await fetch(`${API_BASE}/users`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, avatar }),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${response.status}`);
+        }
+        const created = await response.json();
+        await loadUsers();
+        renderUsersList();
+        renderUserPills();
+        showToast(`Created ${created.name}`, 'success');
+        if (nameInput) nameInput.value = '';
+        if (avatarInput) avatarInput.value = '📚';
+    } catch (err) {
+        console.error('[users] create failed:', err);
+        showToast(`Failed to create user: ${err.message}`, 'error');
+    } finally {
+        if (submitBtn) submitBtn.disabled = false;
+    }
+}
+
+async function handleDeleteUser(user) {
+    if (allUsers.length <= 1) {
+        showToast('Cannot delete the only user', 'error');
+        return;
+    }
+    const confirmed = window.confirm(
+        `Delete ${user.name}? This will also remove all their books, bookmarks, and progress.`
+    );
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/users/${user.id}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${response.status}`);
+        }
+
+        const wasCurrent = currentUser && currentUser.id === user.id;
+        await loadUsers();
+
+        if (wasCurrent && allUsers.length > 0) {
+            await switchUser(allUsers[0].id);
+        } else {
+            renderUserPills();
+        }
+        renderUsersList();
+        showToast(`Deleted ${user.name}`, 'success');
+    } catch (err) {
+        console.error('[users] delete failed:', err);
+        showToast(`Failed to delete user: ${err.message}`, 'error');
+    }
+}
+
 function showBookmarksModal() {
     renderBookmarks();
     const modal = document.getElementById('bookmarksModal');
@@ -1738,6 +2125,604 @@ function showToast(message, type = 'info') {
         toast.classList.add('toast-fade');
         setTimeout(() => toast.remove(), 300);
     }, 3000);
+}
+
+// ============ CATEGORIES ============
+
+async function loadCategoryPresets() {
+    if (categoriesState.presets.length) return;
+    try {
+        const res = await fetch(`${API_BASE}/categories/presets`);
+        if (!res.ok) return;
+        categoriesState.presets = await res.json();
+        categoriesState.presetByKey = {};
+        for (const p of categoriesState.presets) {
+            categoriesState.presetByKey[p.key] = p;
+        }
+    } catch (err) {
+        console.error('[categories] presets load failed', err);
+    }
+}
+
+async function loadCategories() {
+    if (!currentUser) {
+        categoriesState.list = [];
+        categoriesState.byId = {};
+        categoriesState.uncategorisedCount = 0;
+        return;
+    }
+    try {
+        const res = await fetch(`${API_BASE}/categories?user_id=${currentUser.id}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        categoriesState.list = data.categories || [];
+        categoriesState.uncategorisedCount = data.uncategorised_count || 0;
+        categoriesState.byId = {};
+        for (const c of categoriesState.list) categoriesState.byId[c.id] = c;
+    } catch (err) {
+        console.error('[categories] load failed', err);
+        categoriesState.list = [];
+        categoriesState.byId = {};
+    }
+}
+
+function _categoryArt(cat) {
+    if (cat.image_path) {
+        return `<div class="category-tile-art"><img src="${API_BASE}/categories/${cat.id}/image?v=${Date.now()}" alt=""></div>`;
+    }
+    if (cat.preset_image) {
+        const preset = categoriesState.presetByKey[cat.preset_image];
+        // Prefer the illustrated icon (Iconify SVG) over the bare emoji.
+        // The colour-blocked background comes from CSS class `preset-<key>`.
+        if (preset && preset.icon) {
+            return `<div class="category-tile-art preset-${escapeHtml(cat.preset_image)}">
+                <img class="category-tile-icon" src="${preset.icon}" alt="${escapeHtml(preset.label || '')}"
+                     onerror="this.replaceWith(Object.assign(document.createTextNode('${preset.emoji || '📚'}')));">
+            </div>`;
+        }
+        const emoji = preset ? preset.emoji : '📚';
+        return `<div class="category-tile-art preset-${escapeHtml(cat.preset_image)}">${emoji}</div>`;
+    }
+    return `<div class="category-tile-art">${escapeHtml(cat.emoji || '📚')}</div>`;
+}
+
+function _bookCountFor(category) {
+    // Prefer the API-supplied count (sees all books, not just paginated). Fall
+    // back to filtering the in-memory list, which the API matches anyway.
+    if (typeof category.book_count === 'number') return category.book_count;
+    return books.filter(b => b.category_id === category.id).length;
+}
+
+function showCategoryBrowser() {
+    categoriesState.currentCategoryId = undefined;
+
+    const browser = document.getElementById('categoryBrowser');
+    const contents = document.getElementById('categoryContents');
+    if (browser) browser.classList.remove('hidden');
+    if (contents) contents.classList.add('hidden');
+
+    const grid = document.getElementById('categoryGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+
+    // Virtual tiles first.
+    const allTile = _buildCategoryTile({
+        id: '__all__',
+        name: 'All books',
+        emoji: '📖',
+        bookCount: books.length,
+        virtual: true,
+        onClick: () => { categoriesState.currentCategoryId = null; renderLibrary(); },
+    });
+    grid.appendChild(allTile);
+
+    if (categoriesState.uncategorisedCount > 0) {
+        const uncTile = _buildCategoryTile({
+            id: '__uncategorised__',
+            name: 'Uncategorised',
+            emoji: '🗂️',
+            bookCount: categoriesState.uncategorisedCount,
+            virtual: true,
+            onClick: () => { categoriesState.currentCategoryId = -1; renderLibrary(); },
+        });
+        grid.appendChild(uncTile);
+    }
+
+    // Top-level categories only on the landing screen; sub-categories appear
+    // as a strip inside their parent's contents view.
+    const topLevel = categoriesState.list.filter(c => !c.parent_id);
+    for (const cat of topLevel) {
+        const tile = document.createElement('div');
+        tile.className = 'category-tile';
+        tile.dataset.categoryId = cat.id;
+        tile.innerHTML = `
+            ${_categoryArt(cat)}
+            <div class="category-tile-meta">
+                <div class="category-tile-name">${escapeHtml(cat.name)}</div>
+                <div class="category-tile-count">${_bookCountFor(cat)} book${_bookCountFor(cat) === 1 ? '' : 's'}</div>
+            </div>
+        `;
+        tile.addEventListener('click', () => {
+            categoriesState.currentCategoryId = cat.id;
+            renderLibrary();
+        });
+        grid.appendChild(tile);
+    }
+}
+
+function _buildCategoryTile({ id, name, emoji, bookCount, virtual, onClick }) {
+    const tile = document.createElement('div');
+    tile.className = 'category-tile' + (virtual ? ' is-virtual' : '');
+    tile.dataset.categoryId = id;
+    tile.innerHTML = `
+        <div class="category-tile-art">${escapeHtml(emoji)}</div>
+        <div class="category-tile-meta">
+            <div class="category-tile-name">${escapeHtml(name)}</div>
+            <div class="category-tile-count">${bookCount} book${bookCount === 1 ? '' : 's'}</div>
+        </div>
+    `;
+    tile.addEventListener('click', onClick);
+    return tile;
+}
+
+function showCategoryContents(categoryId) {
+    const browser = document.getElementById('categoryBrowser');
+    const contents = document.getElementById('categoryContents');
+    const titleEl = document.getElementById('categoryContentsTitle');
+    const strip = document.getElementById('subcategoryStrip');
+
+    if (browser) browser.classList.add('hidden');
+    if (contents) contents.classList.remove('hidden');
+
+    let label = 'All books';
+    let filtered = books;
+
+    if (categoryId === null) {
+        label = 'All books';
+        filtered = books;
+    } else if (categoryId === -1) {
+        label = 'Uncategorised';
+        filtered = books.filter(b => !b.category_id);
+    } else {
+        const cat = categoriesState.byId[categoryId];
+        label = cat ? `${cat.emoji ? cat.emoji + ' ' : ''}${cat.name}` : 'Category';
+        // Include books in this category and any of its sub-categories.
+        const subIds = categoriesState.list.filter(c => c.parent_id === categoryId).map(c => c.id);
+        const idSet = new Set([categoryId, ...subIds]);
+        filtered = books.filter(b => idSet.has(b.category_id));
+    }
+
+    if (titleEl) titleEl.textContent = label;
+
+    // Sub-category chips (only when viewing a real top-level category).
+    if (strip) {
+        strip.innerHTML = '';
+        if (typeof categoryId === 'number' && categoryId > 0) {
+            const subs = categoriesState.list.filter(c => c.parent_id === categoryId);
+            for (const sub of subs) {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'subcategory-chip';
+                const subBookCount = books.filter(b => b.category_id === sub.id).length;
+                chip.textContent = `${sub.emoji || ''} ${sub.name} (${subBookCount})`;
+                chip.addEventListener('click', () => {
+                    categoriesState.currentCategoryId = sub.id;
+                    renderLibrary();
+                });
+                strip.appendChild(chip);
+            }
+        }
+    }
+
+    _renderBooksGrid(filtered);
+}
+
+// ── Manage Categories modal ─────────────────────────────────────────────────
+
+function showCategoriesModal() {
+    if (!currentUser) {
+        showToast('Pick a user first', 'error');
+        return;
+    }
+    Promise.all([loadCategoryPresets(), loadCategories()]).then(() => {
+        _resetCategoryForm();
+        renderCategoriesList();
+        renderCategoryParentSelect();
+        renderPresetGrid();
+        const modal = document.getElementById('categoriesModal');
+        if (modal) modal.classList.add('visible');
+    });
+}
+
+function hideCategoriesModal() {
+    const modal = document.getElementById('categoriesModal');
+    if (modal) modal.classList.remove('visible');
+}
+
+function renderCategoriesList() {
+    const list = document.getElementById('categoriesList');
+    if (!list) return;
+    list.innerHTML = '';
+
+    const top = categoriesState.list.filter(c => !c.parent_id);
+    for (const cat of top) {
+        list.appendChild(_buildCategoryRow(cat, false));
+        const subs = categoriesState.list.filter(c => c.parent_id === cat.id);
+        for (const sub of subs) list.appendChild(_buildCategoryRow(sub, true));
+    }
+}
+
+function _categoryRowIcon(cat) {
+    if (cat.image_path) return `<img src="${API_BASE}/categories/${cat.id}/image?v=${Date.now()}" alt="">`;
+    if (cat.preset_image) {
+        const preset = categoriesState.presetByKey[cat.preset_image];
+        if (preset && preset.icon) {
+            // Inline icon for the manage-categories list. Background colour
+            // comes from the CSS preset class on the parent .cat-row-icon.
+            return `<img class="cat-row-icon-img" src="${preset.icon}" alt="${escapeHtml(preset.label || '')}">`;
+        }
+        return preset ? preset.emoji : '📚';
+    }
+    return cat.emoji || '📚';
+}
+
+function _buildCategoryRow(cat, isChild) {
+    const li = document.createElement('li');
+    li.className = 'category-row' + (isChild ? ' is-child' : '');
+    li.innerHTML = `
+        <div class="cat-row-icon">${_categoryRowIcon(cat)}</div>
+        <div class="cat-row-name">${escapeHtml(cat.name)}</div>
+        <div class="cat-row-count">${cat.book_count || 0} book${(cat.book_count || 0) === 1 ? '' : 's'}</div>
+    `;
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'cat-row-action edit';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => _populateCategoryFormForEdit(cat));
+    li.appendChild(editBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'cat-row-action delete';
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => handleDeleteCategory(cat));
+    li.appendChild(delBtn);
+
+    return li;
+}
+
+function renderCategoryParentSelect() {
+    const sel = document.getElementById('newCategoryParent');
+    if (!sel) return;
+    const editingId = categoriesState.editingId;
+    sel.innerHTML = '<option value="">— top level —</option>';
+    for (const cat of categoriesState.list) {
+        if (cat.parent_id) continue;          // only top-level can be parents
+        if (editingId && cat.id === editingId) continue;  // can't be its own parent
+        const opt = document.createElement('option');
+        opt.value = cat.id;
+        opt.textContent = `${cat.emoji || '📚'} ${cat.name}`;
+        sel.appendChild(opt);
+    }
+}
+
+function renderPresetGrid() {
+    const grid = document.getElementById('presetGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (const preset of categoriesState.presets) {
+        const tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'preset-tile';
+        tile.style.background = preset.colour || '#475569';
+        tile.dataset.presetKey = preset.key;
+        tile.title = preset.label;
+        if (preset.icon) {
+            const img = document.createElement('img');
+            img.className = 'preset-tile-icon';
+            img.alt = preset.label || '';
+            img.src = preset.icon;
+            // If Iconify is unreachable, fall back to the emoji glyph.
+            img.addEventListener('error', () => {
+                tile.removeChild(img);
+                tile.textContent = preset.emoji || '📚';
+            });
+            tile.appendChild(img);
+        } else {
+            tile.textContent = preset.emoji || '📚';
+        }
+        tile.addEventListener('click', () => {
+            categoriesState.pendingVisual = { kind: 'preset', value: preset.key };
+            grid.querySelectorAll('.preset-tile').forEach(t => t.classList.toggle('selected', t === tile));
+        });
+        if (categoriesState.pendingVisual.kind === 'preset' &&
+            categoriesState.pendingVisual.value === preset.key) {
+            tile.classList.add('selected');
+        }
+        grid.appendChild(tile);
+    }
+}
+
+function _resetCategoryForm() {
+    categoriesState.editingId = null;
+    categoriesState.pendingVisual = { kind: 'preset', value: 'general' };
+    document.getElementById('categoryEditId').value = '';
+    document.getElementById('newCategoryName').value = '';
+    document.getElementById('newCategoryParent').value = '';
+    document.getElementById('newCategoryEmoji').value = '';
+    document.getElementById('newCategoryImage').value = '';
+    document.getElementById('categoryFormTitle').textContent = 'New category';
+    document.getElementById('saveCategoryBtn').textContent = 'Create category';
+    document.getElementById('cancelCategoryEditBtn').classList.add('hidden');
+    _switchVisualTab('preset');
+}
+
+function _populateCategoryFormForEdit(cat) {
+    categoriesState.editingId = cat.id;
+    document.getElementById('categoryEditId').value = cat.id;
+    document.getElementById('newCategoryName').value = cat.name || '';
+    document.getElementById('newCategoryParent').value = cat.parent_id || '';
+    document.getElementById('newCategoryEmoji').value = cat.emoji || '';
+    document.getElementById('categoryFormTitle').textContent = `Edit “${cat.name}”`;
+    document.getElementById('saveCategoryBtn').textContent = 'Save changes';
+    document.getElementById('cancelCategoryEditBtn').classList.remove('hidden');
+
+    if (cat.image_path) {
+        categoriesState.pendingVisual = { kind: 'image', value: null };
+        _switchVisualTab('upload');
+    } else if (cat.preset_image) {
+        categoriesState.pendingVisual = { kind: 'preset', value: cat.preset_image };
+        _switchVisualTab('preset');
+    } else if (cat.emoji) {
+        categoriesState.pendingVisual = { kind: 'emoji', value: cat.emoji };
+        _switchVisualTab('emoji');
+    }
+    renderPresetGrid();
+    renderCategoryParentSelect();
+}
+
+function _switchVisualTab(tab) {
+    document.querySelectorAll('.visual-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    document.getElementById('visualPanePreset').classList.toggle('hidden', tab !== 'preset');
+    document.getElementById('visualPaneEmoji').classList.toggle('hidden', tab !== 'emoji');
+    document.getElementById('visualPaneUpload').classList.toggle('hidden', tab !== 'upload');
+    if (tab !== 'preset' && categoriesState.pendingVisual.kind === 'preset') {
+        // Tab switch implies the user wants the other visual; leave value
+        // alone until they actually pick to make accidental clicks recoverable.
+    }
+}
+
+async function handleSubmitCategoryForm(event) {
+    event.preventDefault();
+    const name = document.getElementById('newCategoryName').value.trim();
+    const parentRaw = document.getElementById('newCategoryParent').value;
+    const parent_id = parentRaw ? parseInt(parentRaw, 10) : null;
+    const emojiVal = document.getElementById('newCategoryEmoji').value.trim();
+    const editingId = categoriesState.editingId;
+
+    if (!name) {
+        showToast('Name is required', 'error');
+        return;
+    }
+
+    // Determine which visual the user actually configured. Active tab wins.
+    const activeTab = document.querySelector('.visual-tab.active')?.dataset.tab || 'preset';
+    let payload = { name, parent_id };
+    if (activeTab === 'preset') {
+        payload.preset_image = categoriesState.pendingVisual.kind === 'preset'
+            ? categoriesState.pendingVisual.value
+            : 'general';
+        payload.emoji = null;
+    } else if (activeTab === 'emoji') {
+        payload.emoji = emojiVal || '📚';
+        payload.preset_image = null;
+    } else {
+        // upload tab — for create, fall back to a preset; image upload follows
+        // creation as a separate POST below.
+        if (!editingId) {
+            payload.preset_image = 'general';
+            payload.emoji = null;
+        }
+    }
+
+    try {
+        let categoryId;
+        if (editingId) {
+            const res = await fetch(`${API_BASE}/categories/${editingId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            categoryId = editingId;
+        } else {
+            const res = await fetch(`${API_BASE}/categories`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...payload, user_id: currentUser.id }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            const created = await res.json();
+            categoryId = created.id;
+        }
+
+        // If user picked the upload tab, send the image now (works for both
+        // create and edit; for create we do it after the row exists).
+        if (activeTab === 'upload') {
+            const fileInput = document.getElementById('newCategoryImage');
+            const file = fileInput?.files?.[0];
+            if (file) {
+                const fd = new FormData();
+                fd.append('file', file);
+                const upRes = await fetch(`${API_BASE}/categories/${categoryId}/image`, {
+                    method: 'POST',
+                    body: fd,
+                });
+                if (!upRes.ok) {
+                    const err = await upRes.json().catch(() => ({}));
+                    throw new Error(err.error || `image upload HTTP ${upRes.status}`);
+                }
+            }
+        }
+
+        showToast(editingId ? 'Category updated' : 'Category created', 'success');
+        await loadCategories();
+        renderCategoriesList();
+        renderCategoryParentSelect();
+        _resetCategoryForm();
+        // Refresh whatever library view is currently open.
+        renderLibrary();
+    } catch (err) {
+        console.error('[categories] save failed', err);
+        showToast(`Failed: ${err.message}`, 'error');
+    }
+}
+
+async function handleDeleteCategory(cat) {
+    const confirmed = window.confirm(
+        `Delete "${cat.name}"? Books in it will become uncategorised; sub-categories will also be deleted.`
+    );
+    if (!confirmed) return;
+    try {
+        const res = await fetch(`${API_BASE}/categories/${cat.id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        showToast(`Deleted ${cat.name}`, 'success');
+        await loadBooks();   // category_id on books may have been nulled by FK
+        await loadCategories();
+        renderCategoriesList();
+        renderCategoryParentSelect();
+        renderLibrary();
+    } catch (err) {
+        console.error('[categories] delete failed', err);
+        showToast(`Failed: ${err.message}`, 'error');
+    }
+}
+
+// ── Assign book → category modal ───────────────────────────────────────────
+
+function showAssignCategoryModal(bookId) {
+    const book = books.find(b => b.id === bookId);
+    if (!book) return;
+    const modal = document.getElementById('assignCategoryModal');
+    const titleEl = document.getElementById('assignCategoryBookTitle');
+    const list = document.getElementById('assignCategoryList');
+    if (!modal || !list) return;
+
+    if (titleEl) titleEl.textContent = book.title;
+
+    Promise.all([loadCategoryPresets(), loadCategories()]).then(() => {
+        list.innerHTML = '';
+        // "Uncategorised" option first.
+        list.appendChild(_buildAssignRow(book, null, 'Uncategorised', '🗂️'));
+        const top = categoriesState.list.filter(c => !c.parent_id);
+        for (const cat of top) {
+            list.appendChild(_buildAssignRow(book, cat.id, cat.name, _categoryRowIcon(cat)));
+            const subs = categoriesState.list.filter(c => c.parent_id === cat.id);
+            for (const sub of subs) {
+                list.appendChild(_buildAssignRow(book, sub.id, '↳ ' + sub.name, _categoryRowIcon(sub)));
+            }
+        }
+        modal.classList.add('visible');
+    });
+}
+
+function _buildAssignRow(book, categoryId, label, icon) {
+    const li = document.createElement('li');
+    li.className = 'category-row is-selectable';
+    if (book.category_id === categoryId || (book.category_id == null && categoryId == null)) {
+        li.style.borderColor = 'var(--br-accent)';
+    }
+    li.innerHTML = `
+        <div class="cat-row-icon">${icon || '📚'}</div>
+        <div class="cat-row-name">${escapeHtml(label)}</div>
+    `;
+    li.addEventListener('click', () => assignBookToCategory(book.id, categoryId));
+    return li;
+}
+
+function hideAssignCategoryModal() {
+    const modal = document.getElementById('assignCategoryModal');
+    if (modal) modal.classList.remove('visible');
+}
+
+async function assignBookToCategory(bookId, categoryId) {
+    try {
+        const res = await fetch(`${API_BASE}/books/${bookId}/category`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category_id: categoryId }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        const book = books.find(b => b.id === bookId);
+        if (book) book.category_id = categoryId;
+        showToast('Moved', 'success');
+        hideAssignCategoryModal();
+        await loadCategories();   // recompute book_count
+        renderLibrary();
+    } catch (err) {
+        console.error('[categories] assign failed', err);
+        showToast(`Failed: ${err.message}`, 'error');
+    }
+}
+
+// ── Refresh / regenerate audio ─────────────────────────────────────────────
+
+async function regenerateAudioForCurrentBook() {
+    if (!currentBook) return;
+    const confirmed = window.confirm(
+        `Regenerate audio for "${currentBook.title}"? All cached MP3s for this book will be deleted and re-synthesised in the background.`
+    );
+    if (!confirmed) return;
+
+    try {
+        const body = selectedVoice ? { voice_id: selectedVoice } : {};
+        const res = await fetch(`${API_BASE}/books/${currentBook.id}/regenerate-audio`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        showToast(
+            `Regenerating: removed ${data.files_removed} files, queued ${data.pages_queued} pages`,
+            'success'
+        );
+        // Drop the in-memory audio so the next play re-fetches from the server.
+        if (currentAudio) {
+            currentAudio.pause();
+            currentAudio = null;
+        }
+        isPlaying = false;
+        if (playPauseBtn) playPauseBtn.textContent = 'Play';
+        // Restart audio progress polling for this book.
+        if (typeof startReaderAudioProgress === 'function') {
+            startReaderAudioProgress(currentBook.id);
+        }
+        // Trigger a fresh load on the current page; server will return 202 until ready.
+        if (typeof loadPageAudio === 'function') {
+            loadPageAudio(currentPage);
+        }
+    } catch (err) {
+        console.error('[regenerate] failed', err);
+        showToast(`Failed: ${err.message}`, 'error');
+    }
 }
 
 // ============ START ============
