@@ -1366,11 +1366,16 @@ function seekToSentence(sentenceIndex) {
     const duration = currentAudio.duration;
     let targetTime = 0;
 
-    // Use real timing data if available
-    if (audioTiming.length > 0 && sentenceIndex < audioTiming.length) {
+    // Only trust audio_timing if it looks sentence-aligned (one entry per
+    // displayed sentence). Older builds stored word-level timings here, which
+    // would mis-map sentence indices to early offsets — fall back to even
+    // distribution in that case.
+    const hasSentenceTimings = audioTiming.length > 0
+        && audioTiming.length === pageSentences.length
+        && sentenceIndex < audioTiming.length;
+    if (hasSentenceTimings) {
         targetTime = audioTiming[sentenceIndex].offset;
     } else {
-        // Fallback: estimate timing
         const avgTimePerSentence = duration / pageSentences.length;
         targetTime = sentenceIndex * avgTimePerSentence;
     }

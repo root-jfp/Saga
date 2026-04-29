@@ -149,6 +149,46 @@ def get_page_text(conn, book_id, page_number):
         cur.close()
 
 
+def _compute_sentence_timings_for_page(conn, book_id, page_number, duration):
+    """Fetch the page's sentences and compute character-proportional
+    sentence-level timings as [{offset, duration}, …]. Returns [] on failure
+    so the caller can store NULL — the frontend will fall back to even
+    distribution rather than mis-aligned data."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT sentences FROM book_pages WHERE book_id = %s AND page_number = %s",
+            (book_id, page_number),
+        )
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return []
+        sentences = row[0]
+        if isinstance(sentences, str):
+            sentences = json.loads(sentences)
+        if not isinstance(sentences, list) or not sentences or duration <= 0:
+            return []
+        total_chars = sum(len((s or {}).get('text', '')) for s in sentences)
+        if total_chars == 0:
+            return []
+        timings = []
+        elapsed = 0.0
+        for sent in sentences:
+            sent_chars = max(len((sent or {}).get('text', '')), 1)
+            sent_duration = duration * (sent_chars / total_chars)
+            timings.append({
+                'offset': round(elapsed, 4),
+                'duration': round(sent_duration, 4),
+            })
+            elapsed += sent_duration
+        return timings
+    except Exception as e:
+        print(f"[AUDIO WORKER] sentence-timing compute failed for book={book_id} p={page_number}: {e}")
+        return []
+    finally:
+        cur.close()
+
+
 def generate_audio(text_content, audio_path, voice_id=None):
     """Generate audio using TTS generator."""
     try:
@@ -161,7 +201,15 @@ def generate_audio(text_content, audio_path, voice_id=None):
 
 
 def update_job_completed(conn, job_id, book_id, page_number, audio_path, duration, voice_id, word_timings):
-    """Mark a job as completed and update page audio info."""
+    """Mark a job as completed and update page audio info.
+
+    The frontend's seekToSentence() expects audio_timing to be a list of
+    sentence-level entries (one per displayed sentence) with {offset, duration}.
+    Word-level timings from edge-tts WordBoundary events would mis-map sentence
+    indices to early offsets (the fifth sentence would seek to the fifth word).
+    So we recompute sentence timings here from the page's sentences and store
+    those instead.
+    """
     cur = conn.cursor()
     try:
         # Update job status
@@ -171,8 +219,11 @@ def update_job_completed(conn, job_id, book_id, page_number, audio_path, duratio
             WHERE id = %s
         """, (job_id,))
 
-        # Update page audio info
-        timing_json = json.dumps(word_timings) if word_timings else None
+        # Compute sentence-level timings from the stored sentences + total duration
+        sentence_timings = _compute_sentence_timings_for_page(
+            conn, book_id, page_number, duration
+        )
+        timing_json = json.dumps(sentence_timings) if sentence_timings else None
         cur.execute("""
             UPDATE book_pages
             SET audio_status = 'ready',
